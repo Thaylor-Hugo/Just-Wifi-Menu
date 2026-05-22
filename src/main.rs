@@ -1,42 +1,23 @@
-use gtk::prelude::*;
-use gtk::{glib, Application, ApplicationWindow, Button};
 
-const APP_ID: &str = "org.gtk_rs.HelloWorld";
+#[tokio::main]
+async fn main() -> zbus::Result<()> {
+    println!("Hello, world!");
 
-fn main() -> glib::ExitCode {
-    // Create a new application
-    let app = Application::builder().application_id(APP_ID).build();
-
-    // Connect to "activate" signal of `app`
-    app.connect_activate(build_ui);
-
-    // Run the application
-    app.run()
+    return Ok(());
 }
 
-fn build_ui(app: &Application) {
-    // Create a button with label and margins
-    let button = Button::builder()
-        .label("Press me!")
-        .margin_top(12)
-        .margin_bottom(12)
-        .margin_start(12)
-        .margin_end(12)
-        .build();
 
-    // Connect to "clicked" signal of `button`
-    button.connect_clicked(|button| {
-        // Set the label to "Hello World!" after the button has been clicked on
-        button.set_label("Hello World!");
-    });
+async fn print_access_points(connection: &zbus::Connection) -> zbus::Result<()> {
+    let m = connection.call_method(
+        Some("org.freedesktop.NetworkManager"),
+        "/org/freedesktop/NetworkManager/Devices/5",
+        Some("org.freedesktop.NetworkManager.Device.Wireless"),
+        "GetAllAccessPoints",
+        &()
+    ).await?;
 
-    // Create a window
-    let window = ApplicationWindow::builder()
-        .application(app)
-        .title("My GTK App")
-        .child(&button)
-        .build();
+    let reply: Vec<zbus::zvariant::OwnedObjectPath> = m.body().deserialize().unwrap();
+    println!("{:?}", reply);
 
-    // Present window
-    window.present();
+    return Ok(());
 }
