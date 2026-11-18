@@ -1,9 +1,21 @@
 mod dbus;
+mod ui;
 
 use dbus::wifi::{WifiManager, WifiNetwork};
 
-#[tokio::main]
-async fn main() -> zbus::Result<()> {
+fn main() -> zbus::Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+
+    if args.len() == 1 || args.get(1).map(String::as_str) == Some("gui") {
+        ui::run_gui();
+        return Ok(());
+    }
+
+    let runtime = tokio::runtime::Runtime::new()?;
+    runtime.block_on(run_cli(&args))
+}
+
+async fn run_cli(args: &[String]) -> zbus::Result<()> {
     let connection = dbus::connect_system().await?;
 
     let Some(manager) = WifiManager::new(connection).await? else {
@@ -11,7 +23,6 @@ async fn main() -> zbus::Result<()> {
         return Ok(());
     };
 
-    let args: Vec<String> = std::env::args().collect();
     let command = args.get(1).map(String::as_str).unwrap_or("list");
 
     match command {

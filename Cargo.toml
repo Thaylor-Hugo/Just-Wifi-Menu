@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 gtk = { version = "0.10.1", package = "gtk4", features = ["v4_20"] }
+relm4 = "0.10"
 zbus = { version = "4.0", features = ["blocking"] } # The D-Bus library
 tokio = { version = "1", features = ["full"] } # The Async runtime
 futures = "0.3" # Helpers for streams
