@@ -1,0 +1,93 @@
+/* Tema padrão do Just-Wifi-Menu (GTK4 CSS)
+ * Você pode personalizar este arquivo em ~/.config/just-wifi-menu/style.css
+ * Dica: rode `GTK_DEBUG=interactive cargo run` para inspecionar classes ao vivo.
+ */
+
+@define-color menu_bg rgba(24, 24, 37, 0.96);
+@define-color menu_surface rgba(49, 50, 68, 0.72);
+@define-color menu_surface_hover rgba(69, 71, 90, 0.85);
+@define-color menu_connected rgba(137, 180, 250, 0.18);
+@define-color menu_border rgba(137, 180, 250, 0.35);
+@define-color menu_accent #89b4fa;
+@define-color menu_text #cdd6f4;
+@define-color menu_subtext #a6adc8;
+@define-color menu_danger #f38ba8;
+
+.wifi-menu-window {
+    background-color: @menu_bg;
+    color: @menu_text;
+}
+
+.wifi-title {
+    font-size: 16px;
+    font-weight: 700;
+}
+
+.wifi-status {
+    font-size: 12px;
+    color: @menu_subtext;
+}
+
+.wifi-list {
+    background-color: transparent;
+}
+
+.wifi-list > row {
+    padding: 0;
+    margin-bottom: 6px;
+    border-radius: 10px;
+    background-color: @menu_surface;
+}
+
+.wifi-list > row:hover {
+    background-color: @menu_surface_hover;
+}
+
+.wifi-row {
+    border-radius: 10px;
+}
+
+.wifi-row-connected {
+    background-color: @menu_connected;
+    border: 1px solid @menu_border;
+}
+
+.wifi-ssid {
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.wifi-subtitle {
+    font-size: 11px;
+    color: @menu_subtext;
+}
+
+.wifi-strength {
+    font-size: 12px;
+    color: @menu_subtext;
+}
+
+.wifi-action-btn,
+.wifi-scan-btn {
+    border-radius: 8px;
+    padding: 4px 10px;
+}
+
+.wifi-forget-btn {
+    border-radius: 8px;
+    color: @menu_danger;
+}
+
+.wifi-password-box {
+    padding: 10px;
+    border-radius: 10px;
+    background-color: @menu_surface;
+    border: 1px solid @menu_border;
+}
+
+.wifi-connect-btn {
+    background-color: @menu_accent;
+    color: #11111b;
+    font-weight: 600;
+    border-radius: 8px;
+}

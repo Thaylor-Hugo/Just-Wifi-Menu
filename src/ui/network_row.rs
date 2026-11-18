@@ -35,6 +35,14 @@ impl FactoryComponent for NetworkRow {
             set_margin_bottom: 6,
             set_margin_start: 8,
             set_margin_end: 8,
+            add_css_class: "wifi-row",
+            add_css_class: if self.network.connected {
+                "wifi-row-connected"
+            } else if self.network.saved {
+                "wifi-row-saved"
+            } else {
+                "wifi-row-normal"
+            },
 
             gtk::Image {
                 set_icon_name: Some(signal_icon_name(self.network.strength, self.network.secured)),
@@ -49,22 +57,26 @@ impl FactoryComponent for NetworkRow {
                     set_label: &self.network.ssid,
                     set_halign: gtk::Align::Start,
                     set_ellipsize: gtk::pango::EllipsizeMode::End,
+                    add_css_class: "wifi-ssid",
                 },
 
                 gtk::Label {
                     set_label: &subtitle_text(&self.network),
                     set_halign: gtk::Align::Start,
+                    add_css_class: "wifi-subtitle",
                 },
             },
 
             gtk::Label {
                 set_label: &format!("{}%", self.network.strength),
+                add_css_class: "wifi-strength",
             },
 
             gtk::Button {
                 set_icon_name: "user-trash-symbolic",
                 set_tooltip_text: Some("Esquecer rede salva"),
                 set_visible: self.network.saved && !self.network.connected,
+                add_css_class: "wifi-forget-btn",
                 connect_clicked[sender, ssid = self.network.ssid.clone()] => move |_| {
                     let _ = sender.output(NetworkRowOutput::Forget(ssid.clone()));
                 },
@@ -72,6 +84,7 @@ impl FactoryComponent for NetworkRow {
 
             gtk::Button {
                 set_label: if self.network.connected { "Desconectar" } else { "Conectar" },
+                add_css_class: "wifi-action-btn",
                 connect_clicked[sender, net = self.network.clone()] => move |_| {
                     let msg = if net.connected {
                         NetworkRowOutput::Disconnect

@@ -7,6 +7,7 @@ use relm4::gtk::prelude::*;
 use relm4::prelude::*;
 use tokio::sync::mpsc;
 
+use crate::config::{self, AppConfig};
 use crate::dbus;
 use crate::dbus::proxies::{DeviceProxy, NetworkManagerProxy, WirelessDeviceProxy};
 use crate::dbus::wifi::{WifiManager, WifiNetwork};
@@ -44,6 +45,7 @@ pub enum AppMsg {
 }
 
 pub struct WifiApp {
+    config: AppConfig,
     interface: String,
     wifi_enabled: bool,
     scanning: bool,
@@ -52,6 +54,7 @@ pub struct WifiApp {
     networks: FactoryVecDeque<NetworkRow>,
     password_entry: gtk::PasswordEntry,
     cmd_tx: mpsc::UnboundedSender<BackendCmd>,
+    connect_requested: bool,
 }
 
 #[relm4::component(pub)]
@@ -63,18 +66,21 @@ impl SimpleComponent for WifiApp {
     view! {
         gtk::ApplicationWindow {
             set_title: Some("Just Wifi Menu"),
-            set_default_width: 400,
-            set_default_height: 500,
+            set_default_width: model.config.window_width,
+            set_default_height: model.config.window_height,
+            add_css_class: "wifi-menu-window",
 
             gtk::Box {
                 set_orientation: gtk::Orientation::Vertical,
                 set_spacing: 10,
                 set_margin_all: 12,
+                add_css_class: "wifi-menu-container",
 
                 // Cabeçalho: título + spinner + botão de scan + switch Wi-Fi
                 gtk::Box {
                     set_orientation: gtk::Orientation::Horizontal,
                     set_spacing: 8,
+                    add_css_class: "wifi-header",
 
                     gtk::Label {
                         #[watch]
@@ -85,6 +91,7 @@ impl SimpleComponent for WifiApp {
                         },
                         set_hexpand: true,
                         set_halign: gtk::Align::Start,
+                        add_css_class: "wifi-title",
                     },
 
                     gtk::Spinner {
@@ -97,6 +104,7 @@ impl SimpleComponent for WifiApp {
                     gtk::Button {
                         set_icon_name: "view-refresh-symbolic",
                         set_tooltip_text: Some("Escanear redes"),
+                        add_css_class: "wifi-scan-btn",
                         #[watch]
                         set_sensitive: model.wifi_enabled && !model.scanning,
                         connect_clicked => AppMsg::Scan,
@@ -118,6 +126,7 @@ impl SimpleComponent for WifiApp {
                     set_label: &model.status_text,
                     set_halign: gtk::Align::Start,
                     set_ellipsize: gtk::pango::EllipsizeMode::End,
+                    add_css_class: "wifi-status",
                 },
 
                 // Lista rolável gerenciada por FactoryVecDeque
@@ -128,6 +137,7 @@ impl SimpleComponent for WifiApp {
                     #[local_ref]
                     networks_box -> gtk::ListBox {
                         set_selection_mode: gtk::SelectionMode::None,
+                        add_css_class: "wifi-list",
                     }
                 },
 
@@ -139,6 +149,7 @@ impl SimpleComponent for WifiApp {
                     gtk::Box {
                         set_orientation: gtk::Orientation::Vertical,
                         set_spacing: 6,
+                        add_css_class: "wifi-password-box",
 
                         gtk::Label {
                             #[watch]
@@ -163,11 +174,13 @@ impl SimpleComponent for WifiApp {
 
                             gtk::Button {
                                 set_label: "Conectar",
+                                add_css_class: "wifi-connect-btn",
                                 connect_clicked => AppMsg::ConnectWithPassword,
                             },
 
                             gtk::Button {
                                 set_label: "Cancelar",
+                                add_css_class: "wifi-action-btn",
                                 connect_clicked => AppMsg::CancelPassword,
                             },
                         }
@@ -182,6 +195,9 @@ impl SimpleComponent for WifiApp {
         root: Self::Root,
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
+        let config = AppConfig::load();
+        config::apply_css();
+
         let networks = FactoryVecDeque::builder()
             .launch(gtk::ListBox::default())
             .forward(sender.input_sender(), |output| match output {
@@ -196,6 +212,7 @@ impl SimpleComponent for WifiApp {
         let password_entry = gtk::PasswordEntry::new();
 
         let model = Self {
+            config,
             interface: String::new(),
             wifi_enabled: false,
             scanning: false,
@@ -204,6 +221,7 @@ impl SimpleComponent for WifiApp {
             networks,
             password_entry: password_entry.clone(),
             cmd_tx,
+            connect_requested: false,
         };
 
         let networks_box = model.networks.widget();
@@ -239,6 +257,7 @@ impl SimpleComponent for WifiApp {
                     self.status_text = format!("Digite a senha para \"{}\"", net.ssid);
                     self.pending_network = Some(net);
                 } else {
+                    self.connect_requested = true;
                     self.status_text = format!("Conectando em \"{}\"...", net.ssid);
                     let _ = self.cmd_tx.send(BackendCmd::Connect {
                         network: net,
@@ -252,6 +271,7 @@ impl SimpleComponent for WifiApp {
                 };
                 let password = self.password_entry.text().to_string();
                 self.password_entry.set_text("");
+                self.connect_requested = true;
                 self.status_text = format!("Conectando em \"{}\"...", net.ssid);
                 let _ = self.cmd_tx.send(BackendCmd::Connect {
                     network: net,
@@ -264,6 +284,7 @@ impl SimpleComponent for WifiApp {
                 self.status_text = "Conexão cancelada".to_string();
             }
             AppMsg::Disconnect => {
+                self.connect_requested = false;
                 self.status_text = "Desconectando...".to_string();
                 let _ = self.cmd_tx.send(BackendCmd::Disconnect);
             }
@@ -279,10 +300,20 @@ impl SimpleComponent for WifiApp {
                 self.interface = interface;
                 self.wifi_enabled = wifi_enabled;
 
+                let has_connected = networks.iter().any(|n| n.connected);
+                if self.connect_requested && has_connected && self.config.close_on_connect {
+                    relm4::main_application().quit();
+                    return;
+                }
+
                 let mut guard = self.networks.guard();
                 guard.clear();
                 if wifi_enabled {
-                    for net in networks {
+                    let min_strength = self.config.min_signal_strength;
+                    for net in networks
+                        .into_iter()
+                        .filter(|n| n.connected || n.strength >= min_strength)
+                    {
                         guard.push_back(net);
                     }
                     self.status_text = format!("{} rede(s) encontrada(s)", guard.len());

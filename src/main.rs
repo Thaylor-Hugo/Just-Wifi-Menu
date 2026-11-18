@@ -1,3 +1,4 @@
+mod config;
 mod dbus;
 mod ui;
 
