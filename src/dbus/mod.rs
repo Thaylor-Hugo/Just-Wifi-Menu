@@ -1,3 +1,4 @@
+pub mod proxies;
 pub mod wifi;
 
 /// Abre uma conexão assíncrona com o System Bus do D-Bus.

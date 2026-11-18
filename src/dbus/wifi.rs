@@ -1,13 +1,13 @@
 use std::collections::HashMap;
-use zbus::zvariant::OwnedObjectPath;
-use zbus::{Connection, Proxy};
 
-const NM_BUS: &str = "org.freedesktop.NetworkManager";
-const NM_PATH: &str = "/org/freedesktop/NetworkManager";
-const NM_IFACE: &str = "org.freedesktop.NetworkManager";
-const NM_DEVICE_IFACE: &str = "org.freedesktop.NetworkManager.Device";
-const NM_WIRELESS_IFACE: &str = "org.freedesktop.NetworkManager.Device.Wireless";
-const NM_AP_IFACE: &str = "org.freedesktop.NetworkManager.AccessPoint";
+use futures::StreamExt;
+use zbus::Connection;
+use zbus::zvariant::{OwnedObjectPath, Value};
+
+use super::proxies::{
+    AccessPointProxy, DeviceProxy, NetworkManagerProxy, SettingsConnectionProxy, SettingsProxy,
+    WirelessDeviceProxy,
+};
 
 /// Valor de `NMDeviceType` para interfaces Wi-Fi (802.11).
 const NM_DEVICE_TYPE_WIFI: u32 = 2;
@@ -19,82 +19,287 @@ pub struct WifiNetwork {
     pub strength: u8,
     pub secured: bool,
     pub frequency: u32,
-    #[allow(dead_code)] // Será usado na Etapa 2 para conectar a um AP específico
+    pub connected: bool,
+    pub saved: bool,
     pub path: OwnedObjectPath,
 }
 
-/// Procura dinamicamente a primeira interface de rede Wi-Fi no NetworkManager.
-/// Retorna `Ok(Some((object_path, nome_da_interface)))` se encontrar.
-pub async fn find_wifi_device(
-    connection: &Connection,
-) -> zbus::Result<Option<(OwnedObjectPath, String)>> {
-    let nm_proxy = Proxy::new(connection, NM_BUS, NM_PATH, NM_IFACE).await?;
-    let device_paths: Vec<OwnedObjectPath> = nm_proxy.call("GetDevices", &()).await?;
-
-    for path in device_paths {
-        let device_proxy = Proxy::new(connection, NM_BUS, path.as_str(), NM_DEVICE_IFACE).await?;
-        let device_type: u32 = device_proxy.get_property("DeviceType").await?;
-
-        if device_type == NM_DEVICE_TYPE_WIFI {
-            let iface_name: String = device_proxy.get_property("Interface").await?;
-            return Ok(Some((path, iface_name)));
-        }
-    }
-
-    Ok(None)
+/// Centraliza operações de Wi-Fi sobre uma interface específica do NetworkManager.
+pub struct WifiManager {
+    connection: Connection,
+    pub device_path: OwnedObjectPath,
+    pub interface: String,
 }
 
-/// Lista os Access Points visíveis pelo device Wi-Fi, agrupados por SSID
-/// (mantendo o AP de maior sinal) e ordenados do sinal mais forte ao mais fraco.
-pub async fn list_networks(
-    connection: &Connection,
-    device_path: &OwnedObjectPath,
-) -> zbus::Result<Vec<WifiNetwork>> {
-    let wireless_proxy =
-        Proxy::new(connection, NM_BUS, device_path.as_str(), NM_WIRELESS_IFACE).await?;
-    let ap_paths: Vec<OwnedObjectPath> = wireless_proxy.call("GetAllAccessPoints", &()).await?;
+impl WifiManager {
+    /// Procura dinamicamente a primeira interface Wi-Fi disponível no NetworkManager.
+    pub async fn new(connection: Connection) -> zbus::Result<Option<Self>> {
+        let nm = NetworkManagerProxy::new(&connection).await?;
+        let device_paths = nm.get_devices().await?;
 
-    let mut by_ssid: HashMap<String, WifiNetwork> = HashMap::new();
+        for path in device_paths {
+            let device = DeviceProxy::builder(&connection)
+                .path(path.as_str())?
+                .build()
+                .await?;
 
-    for ap_path in ap_paths {
-        let ap_proxy = Proxy::new(connection, NM_BUS, ap_path.as_str(), NM_AP_IFACE).await?;
-
-        let ssid_bytes: Vec<u8> = ap_proxy.get_property("Ssid").await?;
-        if ssid_bytes.is_empty() {
-            // Redes ocultas vêm com SSID vazio; serão tratadas em etapas futuras.
-            continue;
+            if device.device_type().await? == NM_DEVICE_TYPE_WIFI {
+                let interface = device.interface().await?;
+                return Ok(Some(Self {
+                    connection,
+                    device_path: path,
+                    interface,
+                }));
+            }
         }
 
-        let ssid = String::from_utf8_lossy(&ssid_bytes).into_owned();
-        let strength: u8 = ap_proxy.get_property("Strength").await?;
-        let frequency: u32 = ap_proxy.get_property("Frequency").await?;
-        let flags: u32 = ap_proxy.get_property("Flags").await?;
-        let wpa_flags: u32 = ap_proxy.get_property("WpaFlags").await?;
-        let rsn_flags: u32 = ap_proxy.get_property("RsnFlags").await?;
-
-        // Bit 0x1 em Flags indica privacidade (WEP); WpaFlags/RsnFlags > 0 indica WPA/WPA2/WPA3.
-        let secured = (flags & 0x1) != 0 || wpa_flags > 0 || rsn_flags > 0;
-
-        let candidate = WifiNetwork {
-            ssid: ssid.clone(),
-            strength,
-            secured,
-            frequency,
-            path: ap_path,
-        };
-
-        by_ssid
-            .entry(ssid)
-            .and_modify(|existing| {
-                if candidate.strength > existing.strength {
-                    *existing = candidate.clone();
-                }
-            })
-            .or_insert(candidate);
+        Ok(None)
     }
 
-    let mut networks: Vec<WifiNetwork> = by_ssid.into_values().collect();
-    networks.sort_by(|a, b| b.strength.cmp(&a.strength));
+    /// Indica se o rádio Wi-Fi está ligado globalmente no NetworkManager.
+    pub async fn is_wireless_enabled(&self) -> zbus::Result<bool> {
+        let nm = NetworkManagerProxy::new(&self.connection).await?;
+        nm.wireless_enabled().await
+    }
 
-    Ok(networks)
+    /// Liga ou desliga o rádio Wi-Fi globalmente.
+    pub async fn set_wireless_enabled(&self, enabled: bool) -> zbus::Result<()> {
+        let nm = NetworkManagerProxy::new(&self.connection).await?;
+        nm.set_wireless_enabled(enabled).await
+    }
+
+    /// Solicita um novo scan de redes na placa Wi-Fi.
+    pub async fn request_scan(&self) -> zbus::Result<()> {
+        let wireless = WirelessDeviceProxy::builder(&self.connection)
+            .path(self.device_path.as_str())?
+            .build()
+            .await?;
+        wireless.request_scan(HashMap::new()).await
+    }
+
+    /// Lista os Access Points visíveis, agrupados por SSID e marcados com `connected` / `saved`.
+    pub async fn list_networks(&self) -> zbus::Result<Vec<WifiNetwork>> {
+        let wireless = WirelessDeviceProxy::builder(&self.connection)
+            .path(self.device_path.as_str())?
+            .build()
+            .await?;
+
+        let active_ap_path = wireless.active_access_point().await?;
+        let saved_map = self.saved_connections_by_ssid().await?;
+        let ap_paths = wireless.get_all_access_points().await?;
+
+        let mut by_ssid: HashMap<String, WifiNetwork> = HashMap::new();
+
+        for ap_path in ap_paths {
+            let ap = AccessPointProxy::builder(&self.connection)
+                .path(ap_path.as_str())?
+                .build()
+                .await?;
+
+            let ssid_bytes = ap.ssid().await?;
+            if ssid_bytes.is_empty() {
+                continue;
+            }
+
+            let ssid = String::from_utf8_lossy(&ssid_bytes).into_owned();
+            let strength = ap.strength().await?;
+            let frequency = ap.frequency().await?;
+            let flags = ap.flags().await?;
+            let wpa_flags = ap.wpa_flags().await?;
+            let rsn_flags = ap.rsn_flags().await?;
+
+            let secured = (flags & 0x1) != 0 || wpa_flags > 0 || rsn_flags > 0;
+            let connected = ap_path == active_ap_path;
+            let saved = saved_map.contains_key(&ssid);
+
+            let candidate = WifiNetwork {
+                ssid: ssid.clone(),
+                strength,
+                secured,
+                frequency,
+                connected,
+                saved,
+                path: ap_path,
+            };
+
+            by_ssid
+                .entry(ssid)
+                .and_modify(|existing| {
+                    // Se qualquer AP desse SSID for o ativo, preservamos `connected = true`.
+                    let is_connected = existing.connected || candidate.connected;
+                    if candidate.connected || (!existing.connected && candidate.strength > existing.strength) {
+                        *existing = candidate.clone();
+                    }
+                    existing.connected = is_connected;
+                })
+                .or_insert(candidate);
+        }
+
+        let mut networks: Vec<WifiNetwork> = by_ssid.into_values().collect();
+        networks.sort_by(|a, b| {
+            b.connected
+                .cmp(&a.connected)
+                .then_with(|| b.saved.cmp(&a.saved))
+                .then_with(|| b.strength.cmp(&a.strength))
+        });
+
+        Ok(networks)
+    }
+
+    /// Conecta a uma rede por SSID. Usa o perfil salvo se existir; caso contrário, cria um novo.
+    pub async fn connect(
+        &self,
+        network: &WifiNetwork,
+        password: Option<&str>,
+    ) -> zbus::Result<()> {
+        let nm = NetworkManagerProxy::new(&self.connection).await?;
+        let saved_map = self.saved_connections_by_ssid().await?;
+
+        if let Some(saved_path) = saved_map.get(&network.ssid) {
+            nm.activate_connection(saved_path, &self.device_path, &network.path)
+                .await?;
+            return Ok(());
+        }
+
+        let mut conn_section: HashMap<&str, Value<'_>> = HashMap::new();
+        conn_section.insert("type", Value::from("802-11-wireless"));
+        conn_section.insert("id", Value::from(network.ssid.as_str()));
+
+        let mut wifi_section: HashMap<&str, Value<'_>> = HashMap::new();
+        wifi_section.insert("ssid", Value::from(network.ssid.as_bytes().to_vec()));
+        wifi_section.insert("mode", Value::from("infrastructure"));
+
+        let mut settings: HashMap<&str, HashMap<&str, Value<'_>>> = HashMap::new();
+        settings.insert("connection", conn_section);
+        settings.insert("802-11-wireless", wifi_section);
+
+        if network.secured
+            && let Some(psk) = password
+        {
+            let mut sec_section: HashMap<&str, Value<'_>> = HashMap::new();
+            sec_section.insert("key-mgmt", Value::from("wpa-psk"));
+            sec_section.insert("psk", Value::from(psk));
+            settings.insert("802-11-wireless-security", sec_section);
+        }
+
+        nm.add_and_activate_connection(settings, &self.device_path, &network.path)
+            .await?;
+
+        Ok(())
+    }
+
+    /// Desconecta a interface Wi-Fi atual.
+    pub async fn disconnect(&self) -> zbus::Result<()> {
+        let device = DeviceProxy::builder(&self.connection)
+            .path(self.device_path.as_str())?
+            .build()
+            .await?;
+        device.disconnect().await
+    }
+
+    /// Remove o perfil salvo de um SSID no NetworkManager.
+    /// Retorna `true` se encontrou e removeu algum perfil.
+    pub async fn forget_network(&self, ssid: &str) -> zbus::Result<bool> {
+        let saved_map = self.saved_connections_by_ssid().await?;
+        let Some(conn_path) = saved_map.get(ssid) else {
+            return Ok(false);
+        };
+
+        let conn_proxy = SettingsConnectionProxy::builder(&self.connection)
+            .path(conn_path.as_str())?
+            .build()
+            .await?;
+        conn_proxy.delete().await?;
+        Ok(true)
+    }
+
+    /// Escuta sinais do NetworkManager em tempo real até Ctrl+C.
+    pub async fn watch_events(&self) -> zbus::Result<()> {
+        let nm = NetworkManagerProxy::new(&self.connection).await?;
+        let wireless = WirelessDeviceProxy::builder(&self.connection)
+            .path(self.device_path.as_str())?
+            .build()
+            .await?;
+        let device = DeviceProxy::builder(&self.connection)
+            .path(self.device_path.as_str())?
+            .build()
+            .await?;
+
+        let mut ap_added = wireless.receive_access_point_added().await?;
+        let mut ap_removed = wireless.receive_access_point_removed().await?;
+        let mut wireless_changed = nm.receive_wireless_enabled_changed().await;
+        let mut active_ap_changed = wireless.receive_active_access_point_changed().await;
+        let mut device_state_changed = device.receive_state_changed().await;
+
+        println!("Escutando eventos D-Bus em {} (Ctrl+C para sair)...", self.interface);
+
+        loop {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {
+                    println!("\nEncerrando monitoramento.");
+                    break;
+                }
+                Some(sig) = ap_added.next() => {
+                    if let Ok(args) = sig.args() {
+                        println!("[+] AccessPointAdded: {}", args.access_point);
+                    }
+                }
+                Some(sig) = ap_removed.next() => {
+                    if let Ok(args) = sig.args() {
+                        println!("[-] AccessPointRemoved: {}", args.access_point);
+                    }
+                }
+                Some(change) = wireless_changed.next() => {
+                    if let Ok(enabled) = change.get().await {
+                        println!("[*] WirelessEnabled mudou para: {enabled}");
+                    }
+                }
+                Some(change) = active_ap_changed.next() => {
+                    if let Ok(ap_path) = change.get().await {
+                        println!("[*] ActiveAccessPoint mudou para: {ap_path}");
+                    }
+                }
+                Some(change) = device_state_changed.next() => {
+                    if let Ok(state) = change.get().await {
+                        println!("[*] Estado do device ({}): {state}", self.interface);
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Mapeia SSID -> ObjectPath das conexões Wi-Fi já salvas no NetworkManager.
+    async fn saved_connections_by_ssid(&self) -> zbus::Result<HashMap<String, OwnedObjectPath>> {
+        let settings = SettingsProxy::new(&self.connection).await?;
+        let paths = settings.list_connections().await?;
+        let mut map = HashMap::new();
+
+        for path in paths {
+            let conn = SettingsConnectionProxy::builder(&self.connection)
+                .path(path.as_str())?
+                .build()
+                .await?;
+
+            let Ok(mut data) = conn.get_settings().await else {
+                continue;
+            };
+
+            let Some(mut wifi_section) = data.remove("802-11-wireless") else {
+                continue;
+            };
+
+            let Some(ssid_value) = wifi_section.remove("ssid") else {
+                continue;
+            };
+
+            if let Ok(bytes) = Vec::<u8>::try_from(ssid_value) {
+                let ssid = String::from_utf8_lossy(&bytes).into_owned();
+                map.insert(ssid, path);
+            }
+        }
+
+        Ok(map)
+    }
 }
