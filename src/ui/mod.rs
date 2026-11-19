@@ -1,4 +1,5 @@
 mod network_row;
+mod saved_row;
 
 use std::cell::Cell;
 
@@ -14,8 +15,11 @@ use tokio::sync::mpsc;
 use crate::config::{self, AppConfig};
 use crate::dbus;
 use crate::dbus::proxies::{DeviceProxy, NetworkManagerProxy, WirelessDeviceProxy};
-use crate::dbus::wifi::{NetworkDetails, WifiManager, WifiNetwork, WifiSecurity};
+use crate::dbus::wifi::{
+    NetworkDetails, SavedNetworkInfo, WifiManager, WifiNetwork, WifiSecurity,
+};
 use network_row::{NetworkRow, NetworkRowInit, NetworkRowMsg, NetworkRowOutput};
+use saved_row::{SavedRow, SavedRowInit, SavedRowMsg, SavedRowOutput};
 
 #[derive(Debug)]
 enum BackendCmd {
@@ -39,6 +43,7 @@ enum BackendCmd {
         ssid: String,
         enabled: bool,
     },
+    ListSaved,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,6 +97,8 @@ pub enum AppMsg {
         ssid: String,
         password: Option<String>,
     },
+    ToggleExpandSaved(String),
+    SavedNetworksLoaded(Vec<SavedNetworkInfo>),
     BackendState {
         interface: String,
         wifi_enabled: bool,
@@ -116,6 +123,8 @@ pub struct WifiApp {
     expanded_password_visible: bool,
     pending_copy_password: bool,
     networks: FactoryVecDeque<NetworkRow>,
+    saved_networks: FactoryVecDeque<SavedRow>,
+    expanded_saved_ssid: Option<String>,
     password_entry: gtk::PasswordEntry,
     hidden_ssid_entry: gtk::Entry,
     hidden_password_entry: gtk::PasswordEntry,
@@ -404,7 +413,7 @@ impl SimpleComponent for WifiApp {
                     },
                 },
 
-                // Página: Redes Salvas (placeholder para Etapa F4)
+                // Página: Redes Salvas
                 add_named[Some("saved")] = &gtk::Box {
                     set_orientation: gtk::Orientation::Vertical,
                     set_spacing: 12,
@@ -423,14 +432,21 @@ impl SimpleComponent for WifiApp {
 
                         gtk::Label {
                             set_label: "Redes salvas",
+                            set_hexpand: true,
+                            set_halign: gtk::Align::Start,
                             add_css_class: "wifi-title",
                         },
                     },
 
-                    gtk::Label {
-                        set_label: "Em construção (Etapa F4).",
+                    gtk::ScrolledWindow {
                         set_vexpand: true,
-                        add_css_class: "wifi-status",
+                        set_policy: (gtk::PolicyType::Never, gtk::PolicyType::Automatic),
+
+                        #[local_ref]
+                        saved_box -> gtk::ListBox {
+                            set_selection_mode: gtk::SelectionMode::None,
+                            add_css_class: "wifi-list",
+                        }
                     },
                 },
 
@@ -573,6 +589,16 @@ impl SimpleComponent for WifiApp {
                 NetworkRowOutput::CopiedFeedback(msg) => AppMsg::BackendStatus(msg),
             });
 
+        let saved_networks = FactoryVecDeque::builder()
+            .launch(gtk::ListBox::default())
+            .forward(sender.input_sender(), |output| match output {
+                SavedRowOutput::ToggleExpand(ssid) => AppMsg::ToggleExpandSaved(ssid),
+                SavedRowOutput::SetAutoconnect { ssid, enabled } => {
+                    AppMsg::SetAutoconnect { ssid, enabled }
+                }
+                SavedRowOutput::Forget(ssid) => AppMsg::Forget(ssid),
+            });
+
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         spawn_dbus_worker(sender.clone(), cmd_rx);
 
@@ -590,6 +616,8 @@ impl SimpleComponent for WifiApp {
             expanded_password_visible: false,
             pending_copy_password: false,
             networks,
+            saved_networks,
+            expanded_saved_ssid: None,
             password_entry: password_entry.clone(),
             hidden_ssid_entry: hidden_ssid_entry.clone(),
             hidden_password_entry: hidden_password_entry.clone(),
@@ -604,6 +632,7 @@ impl SimpleComponent for WifiApp {
 
         let stack = &model.stack;
         let networks_box = model.networks.widget();
+        let saved_box = model.saved_networks.widget();
         let password_entry = &model.password_entry;
         let hidden_ssid_entry = &model.hidden_ssid_entry;
         let hidden_password_entry = &model.hidden_password_entry;
@@ -618,6 +647,9 @@ impl SimpleComponent for WifiApp {
                 self.menu_popover.popdown();
                 self.active_page = page;
                 self.stack.set_visible_child_name(page.stack_name());
+                if page == ActivePage::SavedNetworks {
+                    let _ = self.cmd_tx.send(BackendCmd::ListSaved);
+                }
             }
             AppMsg::ToggleWifi(enabled) => {
                 if self.wifi_enabled == enabled {
@@ -816,6 +848,30 @@ impl SimpleComponent for WifiApp {
                         guard.send(idx, NetworkRowMsg::SetPassword(password));
                         break;
                     }
+                }
+            }
+            AppMsg::ToggleExpandSaved(ssid) => {
+                if self.expanded_saved_ssid.as_deref() == Some(&ssid) {
+                    self.expanded_saved_ssid = None;
+                } else {
+                    self.expanded_saved_ssid = Some(ssid);
+                }
+
+                let guard = self.saved_networks.guard();
+                for idx in 0..guard.len() {
+                    let is_target = self
+                        .expanded_saved_ssid
+                        .as_deref()
+                        .is_some_and(|s| guard[idx].info.ssid == s);
+                    guard.send(idx, SavedRowMsg::SetExpanded(is_target));
+                }
+            }
+            AppMsg::SavedNetworksLoaded(list) => {
+                let mut guard = self.saved_networks.guard();
+                guard.clear();
+                for info in list {
+                    let expanded = self.expanded_saved_ssid.as_deref() == Some(&info.ssid);
+                    guard.push_back(SavedRowInit { info, expanded });
                 }
             }
             AppMsg::BackendState {
@@ -1037,15 +1093,22 @@ async fn handle_backend_cmd(
         }
         BackendCmd::Forget(ssid) => {
             match manager.forget_network(&ssid).await {
-                Ok(true) => sender.input(AppMsg::BackendStatus(format!(
-                    "Perfil \"{ssid}\" removido"
-                ))),
+                Ok(true) => {
+                    sender.input(AppMsg::BackendStatus(format!("Perfil \"{ssid}\" removido")));
+                    if let Ok(saved) = manager.list_saved_networks().await {
+                        sender.input(AppMsg::SavedNetworksLoaded(saved));
+                    }
+                }
                 Ok(false) => sender.input(AppMsg::BackendStatus(format!(
                     "Perfil \"{ssid}\" não encontrado"
                 ))),
                 Err(e) => sender.input(AppMsg::BackendError(format!("Esquecer: {e}"))),
             }
         }
+        BackendCmd::ListSaved => match manager.list_saved_networks().await {
+            Ok(list) => sender.input(AppMsg::SavedNetworksLoaded(list)),
+            Err(e) => sender.input(AppMsg::BackendError(format!("Redes salvas: {e}"))),
+        },
         BackendCmd::FetchDetails(net) => {
             match manager.network_details(&net).await {
                 Ok(details) => sender.input(AppMsg::DetailsLoaded(details)),

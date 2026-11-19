@@ -42,6 +42,16 @@ pub struct NetworkDetails {
     pub security_label: String,
 }
 
+/// Informações de um perfil Wi-Fi salvo no NetworkManager.
+#[derive(Debug, Clone)]
+pub struct SavedNetworkInfo {
+    pub ssid: String,
+    pub security_label: String,
+    pub autoconnect: bool,
+    pub hidden: bool,
+    pub timestamp: u64,
+}
+
 /// Centraliza operações de Wi-Fi sobre uma interface específica do NetworkManager.
 pub struct WifiManager {
     connection: Connection,
@@ -401,6 +411,78 @@ impl WifiManager {
         conn_proxy.update(settings).await
     }
 
+    /// Lista todos os perfis Wi-Fi salvos no NetworkManager (mesmo fora de alcance).
+    pub async fn list_saved_networks(&self) -> zbus::Result<Vec<SavedNetworkInfo>> {
+        let settings = SettingsProxy::new(&self.connection).await?;
+        let paths = settings.list_connections().await?;
+        let mut list = Vec::new();
+
+        for path in paths {
+            let conn = SettingsConnectionProxy::builder(&self.connection)
+                .path(path.as_str())?
+                .build()
+                .await?;
+
+            let Ok(mut data) = conn.get_settings().await else {
+                continue;
+            };
+
+            let Some(mut wifi_section) = data.remove("802-11-wireless") else {
+                continue;
+            };
+
+            let Some(ssid_value) = wifi_section.remove("ssid") else {
+                continue;
+            };
+
+            let Ok(bytes) = Vec::<u8>::try_from(ssid_value) else {
+                continue;
+            };
+            let Some(ssid) = decode_ssid(&bytes) else {
+                continue;
+            };
+
+            let hidden = wifi_section
+                .get("hidden")
+                .and_then(|v| bool::try_from(v.try_clone().ok()?).ok())
+                .unwrap_or(false);
+
+            let conn_section = data.get("connection");
+            let autoconnect = conn_section
+                .and_then(|c| c.get("autoconnect"))
+                .and_then(|v| bool::try_from(v.try_clone().ok()?).ok())
+                .unwrap_or(true);
+            let timestamp = conn_section
+                .and_then(|c| c.get("timestamp"))
+                .and_then(|v| u64::try_from(v.try_clone().ok()?).ok())
+                .unwrap_or(0);
+
+            let security_label = data
+                .get("802-11-wireless-security")
+                .and_then(|s| s.get("key-mgmt"))
+                .and_then(|v| String::try_from(v.try_clone().ok()?).ok())
+                .map(|km| format_key_mgmt(&km))
+                .unwrap_or("Aberta")
+                .to_string();
+
+            list.push(SavedNetworkInfo {
+                ssid,
+                security_label,
+                autoconnect,
+                hidden,
+                timestamp,
+            });
+        }
+
+        list.sort_by(|a, b| {
+            b.timestamp
+                .cmp(&a.timestamp)
+                .then_with(|| a.ssid.cmp(&b.ssid))
+        });
+
+        Ok(list)
+    }
+
     /// Escuta sinais do NetworkManager em tempo real até Ctrl+C.
     pub async fn watch_events(&self) -> zbus::Result<()> {
         let nm = NetworkManagerProxy::new(&self.connection).await?;
@@ -492,6 +574,24 @@ impl WifiManager {
     }
 }
 
+/// Formata um timestamp Unix (segundos) em tempo relativo legível.
+pub fn format_last_connected(timestamp: u64, now_secs: u64) -> String {
+    if timestamp == 0 {
+        return "Nunca".to_string();
+    }
+
+    let diff = now_secs.saturating_sub(timestamp);
+    if diff < 60 {
+        "Agora mesmo".to_string()
+    } else if diff < 3600 {
+        format!("Há {} min", diff / 60)
+    } else if diff < 86_400 {
+        format!("Há {} h", diff / 3600)
+    } else {
+        format!("Há {} dia(s)", diff / 86_400)
+    }
+}
+
 /// Formata o identificador `key-mgmt` do NetworkManager para exibição.
 pub fn format_key_mgmt(key_mgmt: &str) -> &'static str {
     match key_mgmt {
@@ -575,5 +675,14 @@ mod tests {
             ordered,
             vec!["Conectada_Fraca", "Salva_Media", "Forte_Aberta", "Fraca"]
         );
+    }
+
+    #[test]
+    fn format_last_connected_formats_relative_times() {
+        assert_eq!(format_last_connected(0, 10_000), "Nunca");
+        assert_eq!(format_last_connected(9_970, 10_000), "Agora mesmo");
+        assert_eq!(format_last_connected(9_400, 10_000), "Há 10 min");
+        assert_eq!(format_last_connected(2_800, 10_000), "Há 2 h");
+        assert_eq!(format_last_connected(100_000, 359_200), "Há 3 dia(s)");
     }
 }
