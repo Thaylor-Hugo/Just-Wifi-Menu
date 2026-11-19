@@ -14,7 +14,7 @@ use tokio::sync::mpsc;
 use crate::config::{self, AppConfig};
 use crate::dbus;
 use crate::dbus::proxies::{DeviceProxy, NetworkManagerProxy, WirelessDeviceProxy};
-use crate::dbus::wifi::{WifiManager, WifiNetwork};
+use crate::dbus::wifi::{WifiManager, WifiNetwork, WifiSecurity};
 use network_row::{NetworkRow, NetworkRowOutput};
 
 #[derive(Debug)]
@@ -25,17 +25,49 @@ enum BackendCmd {
         network: WifiNetwork,
         password: Option<String>,
     },
+    ConnectHidden {
+        ssid: String,
+        security: WifiSecurity,
+        password: Option<String>,
+        hidden: bool,
+    },
     Disconnect,
     Forget(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActivePage {
+    Main,
+    AddNetwork,
+    SavedNetworks,
+    Settings,
+    About,
+}
+
+impl ActivePage {
+    fn stack_name(self) -> &'static str {
+        match self {
+            Self::Main => "main",
+            Self::AddNetwork => "add-network",
+            Self::SavedNetworks => "saved",
+            Self::Settings => "settings",
+            Self::About => "about",
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum AppMsg {
+    Navigate(ActivePage),
     ToggleWifi(bool),
     Scan,
     SelectNetwork(WifiNetwork),
     ConnectWithPassword,
     CancelPassword,
+    SetHiddenSecurity(WifiSecurity),
+    SetHiddenFlag(bool),
+    HiddenFormChanged,
+    SubmitHiddenNetwork,
     EscapePressed,
     Disconnect,
     Forget(String),
@@ -51,6 +83,7 @@ pub enum AppMsg {
 
 pub struct WifiApp {
     config: AppConfig,
+    active_page: ActivePage,
     interface: String,
     wifi_enabled: bool,
     scanning: bool,
@@ -58,6 +91,13 @@ pub struct WifiApp {
     pending_network: Option<WifiNetwork>,
     networks: FactoryVecDeque<NetworkRow>,
     password_entry: gtk::PasswordEntry,
+    hidden_ssid_entry: gtk::Entry,
+    hidden_password_entry: gtk::PasswordEntry,
+    hidden_security: WifiSecurity,
+    hidden_is_hidden: bool,
+    hidden_can_submit: bool,
+    stack: gtk::Stack,
+    menu_popover: gtk::Popover,
     cmd_tx: mpsc::UnboundedSender<BackendCmd>,
     connect_requested: bool,
 }
@@ -75,122 +115,402 @@ impl SimpleComponent for WifiApp {
             set_default_height: model.config.window_height,
             add_css_class: "wifi-menu-window",
 
-            gtk::Box {
-                set_orientation: gtk::Orientation::Vertical,
-                set_spacing: 10,
-                set_margin_all: 12,
-                add_css_class: "wifi-menu-container",
+            #[local_ref]
+            stack -> gtk::Stack {
+                set_transition_type: gtk::StackTransitionType::SlideLeftRight,
+                set_transition_duration: 180,
 
-                // Cabeçalho: título + spinner + botão de scan + switch Wi-Fi
-                gtk::Box {
-                    set_orientation: gtk::Orientation::Horizontal,
-                    set_spacing: 8,
-                    add_css_class: "wifi-header",
+                // Página principal: lista de redes Wi-Fi
+                add_named[Some("main")] = &gtk::Box {
+                    set_orientation: gtk::Orientation::Vertical,
+                    set_spacing: 10,
+                    set_margin_all: 12,
+                    add_css_class: "wifi-menu-container",
 
-                    gtk::Label {
-                        #[watch]
-                        set_label: &if model.interface.is_empty() {
-                            "Wi-Fi".to_string()
-                        } else {
-                            format!("Wi-Fi ({})", model.interface)
-                        },
-                        set_hexpand: true,
-                        set_halign: gtk::Align::Start,
-                        add_css_class: "wifi-title",
-                    },
-
-                    gtk::Spinner {
-                        #[watch]
-                        set_spinning: model.scanning,
-                        #[watch]
-                        set_visible: model.scanning,
-                    },
-
-                    gtk::Button {
-                        set_icon_name: "view-refresh-symbolic",
-                        set_tooltip_text: Some("Escanear redes"),
-                        add_css_class: "wifi-scan-btn",
-                        #[watch]
-                        set_sensitive: model.wifi_enabled && !model.scanning,
-                        connect_clicked => AppMsg::Scan,
-                    },
-
-                    gtk::Switch {
-                        #[watch]
-                        set_active: model.wifi_enabled,
-                        connect_state_set[sender] => move |_, enabled| {
-                            sender.input(AppMsg::ToggleWifi(enabled));
-                            gtk::glib::Propagation::Proceed
-                        }
-                    },
-                },
-
-                // Barra de status
-                gtk::Label {
-                    #[watch]
-                    set_label: &model.status_text,
-                    set_halign: gtk::Align::Start,
-                    set_ellipsize: gtk::pango::EllipsizeMode::End,
-                    add_css_class: "wifi-status",
-                },
-
-                // Lista rolável gerenciada por FactoryVecDeque
-                gtk::ScrolledWindow {
-                    set_vexpand: true,
-                    set_policy: (gtk::PolicyType::Never, gtk::PolicyType::Automatic),
-
-                    #[local_ref]
-                    networks_box -> gtk::ListBox {
-                        set_selection_mode: gtk::SelectionMode::None,
-                        add_css_class: "wifi-list",
-                    }
-                },
-
-                // Painel expansível para digitar senha
-                gtk::Revealer {
-                    #[watch]
-                    set_reveal_child: model.pending_network.is_some(),
-
+                    // Cabeçalho: título + spinner + botão de scan + switch Wi-Fi + menu 3 pontinhos
                     gtk::Box {
-                        set_orientation: gtk::Orientation::Vertical,
-                        set_spacing: 6,
-                        add_css_class: "wifi-password-box",
+                        set_orientation: gtk::Orientation::Horizontal,
+                        set_spacing: 8,
+                        add_css_class: "wifi-header",
 
                         gtk::Label {
                             #[watch]
-                            set_label: &match &model.pending_network {
-                                Some(net) => format!("Senha para \"{}\":", net.ssid),
-                                None => String::new(),
+                            set_label: &if model.interface.is_empty() {
+                                "Wi-Fi".to_string()
+                            } else {
+                                format!("Wi-Fi ({})", model.interface)
                             },
+                            set_hexpand: true,
                             set_halign: gtk::Align::Start,
+                            add_css_class: "wifi-title",
+                        },
+
+                        gtk::Spinner {
+                            #[watch]
+                            set_spinning: model.scanning,
+                            #[watch]
+                            set_visible: model.scanning,
+                        },
+
+                        gtk::Button {
+                            set_icon_name: "list-add-symbolic",
+                            set_tooltip_text: Some("Adicionar rede oculta"),
+                            add_css_class: "wifi-action-btn",
+                            #[watch]
+                            set_sensitive: model.wifi_enabled,
+                            connect_clicked => AppMsg::Navigate(ActivePage::AddNetwork),
+                        },
+
+                        gtk::Button {
+                            set_icon_name: "view-refresh-symbolic",
+                            set_tooltip_text: Some("Escanear redes"),
+                            add_css_class: "wifi-scan-btn",
+                            #[watch]
+                            set_sensitive: model.wifi_enabled && !model.scanning,
+                            connect_clicked => AppMsg::Scan,
+                        },
+
+                        gtk::Switch {
+                            #[watch]
+                            set_active: model.wifi_enabled,
+                            connect_state_set[sender] => move |_, enabled| {
+                                sender.input(AppMsg::ToggleWifi(enabled));
+                                gtk::glib::Propagation::Proceed
+                            }
+                        },
+
+                        gtk::MenuButton {
+                            set_icon_name: "view-more-symbolic",
+                            set_tooltip_text: Some("Opções"),
+                            add_css_class: "wifi-action-btn",
+                            set_popover: Some(&model.menu_popover),
+                        },
+                    },
+
+                    // Barra de status
+                    gtk::Label {
+                        #[watch]
+                        set_label: &model.status_text,
+                        set_halign: gtk::Align::Start,
+                        set_ellipsize: gtk::pango::EllipsizeMode::End,
+                        add_css_class: "wifi-status",
+                    },
+
+                    // Lista rolável gerenciada por FactoryVecDeque
+                    gtk::ScrolledWindow {
+                        set_vexpand: true,
+                        set_policy: (gtk::PolicyType::Never, gtk::PolicyType::Automatic),
+
+                        #[local_ref]
+                        networks_box -> gtk::ListBox {
+                            set_selection_mode: gtk::SelectionMode::None,
+                            add_css_class: "wifi-list",
+                        }
+                    },
+
+                    // Painel expansível para digitar senha
+                    gtk::Revealer {
+                        #[watch]
+                        set_reveal_child: model.pending_network.is_some(),
+
+                        gtk::Box {
+                            set_orientation: gtk::Orientation::Vertical,
+                            set_spacing: 6,
+                            add_css_class: "wifi-password-box",
+
+                            gtk::Label {
+                                #[watch]
+                                set_label: &match &model.pending_network {
+                                    Some(net) => format!("Senha para \"{}\":", net.ssid),
+                                    None => String::new(),
+                                },
+                                set_halign: gtk::Align::Start,
+                            },
+
+                            gtk::Box {
+                                set_orientation: gtk::Orientation::Horizontal,
+                                set_spacing: 6,
+
+                                #[local_ref]
+                                password_entry -> gtk::PasswordEntry {
+                                    set_hexpand: true,
+                                    set_show_peek_icon: true,
+                                    set_placeholder_text: Some("Digite a senha Wi-Fi..."),
+                                    connect_activate => AppMsg::ConnectWithPassword,
+                                },
+
+                                gtk::Button {
+                                    set_label: "Conectar",
+                                    add_css_class: "wifi-connect-btn",
+                                    connect_clicked => AppMsg::ConnectWithPassword,
+                                },
+
+                                gtk::Button {
+                                    set_label: "Cancelar",
+                                    add_css_class: "wifi-action-btn",
+                                    connect_clicked => AppMsg::CancelPassword,
+                                },
+                            }
+                        }
+                    }
+                },
+
+                // Página: Adicionar rede (oculta / manual)
+                add_named[Some("add-network")] = &gtk::Box {
+                    set_orientation: gtk::Orientation::Vertical,
+                    set_spacing: 12,
+                    set_margin_all: 12,
+
+                    gtk::Box {
+                        set_orientation: gtk::Orientation::Horizontal,
+                        set_spacing: 8,
+
+                        gtk::Button {
+                            set_icon_name: "go-previous-symbolic",
+                            set_tooltip_text: Some("Voltar"),
+                            add_css_class: "wifi-action-btn",
+                            connect_clicked => AppMsg::Navigate(ActivePage::Main),
+                        },
+
+                        gtk::Label {
+                            set_label: "Adicionar rede",
+                            add_css_class: "wifi-title",
+                        },
+                    },
+
+                    gtk::Box {
+                        set_orientation: gtk::Orientation::Vertical,
+                        set_spacing: 10,
+                        add_css_class: "wifi-about-card",
+
+                        gtk::Label {
+                            set_label: "Nome da rede (SSID)",
+                            set_halign: gtk::Align::Start,
+                            add_css_class: "wifi-subtitle",
+                        },
+
+                        #[local_ref]
+                        hidden_ssid_entry -> gtk::Entry {
+                            set_placeholder_text: Some("Ex: MinhaRedeOculta"),
+                            connect_changed => AppMsg::HiddenFormChanged,
+                            connect_activate => AppMsg::SubmitHiddenNetwork,
+                        },
+
+                        gtk::Label {
+                            set_label: "Segurança",
+                            set_halign: gtk::Align::Start,
+                            add_css_class: "wifi-subtitle",
                         },
 
                         gtk::Box {
                             set_orientation: gtk::Orientation::Horizontal,
                             set_spacing: 6,
+                            set_homogeneous: true,
 
-                            #[local_ref]
-                            password_entry -> gtk::PasswordEntry {
-                                set_hexpand: true,
-                                set_show_peek_icon: true,
-                                set_placeholder_text: Some("Digite a senha Wi-Fi..."),
-                                connect_activate => AppMsg::ConnectWithPassword,
+                            gtk::ToggleButton {
+                                set_label: "Aberta",
+                                #[watch]
+                                set_active: model.hidden_security == WifiSecurity::Open,
+                                connect_clicked => AppMsg::SetHiddenSecurity(WifiSecurity::Open),
+                            },
+
+                            gtk::ToggleButton {
+                                set_label: "WPA/WPA2",
+                                #[watch]
+                                set_active: model.hidden_security == WifiSecurity::WpaPsk,
+                                connect_clicked => AppMsg::SetHiddenSecurity(WifiSecurity::WpaPsk),
+                            },
+
+                            gtk::ToggleButton {
+                                set_label: "WPA3",
+                                #[watch]
+                                set_active: model.hidden_security == WifiSecurity::Sae,
+                                connect_clicked => AppMsg::SetHiddenSecurity(WifiSecurity::Sae),
+                            },
+                        },
+
+                        gtk::Label {
+                            set_label: "Senha",
+                            set_halign: gtk::Align::Start,
+                            add_css_class: "wifi-subtitle",
+                            #[watch]
+                            set_visible: model.hidden_security != WifiSecurity::Open,
+                        },
+
+                        #[local_ref]
+                        hidden_password_entry -> gtk::PasswordEntry {
+                            set_show_peek_icon: true,
+                            set_placeholder_text: Some("Digite a senha Wi-Fi..."),
+                            #[watch]
+                            set_visible: model.hidden_security != WifiSecurity::Open,
+                            connect_changed => AppMsg::HiddenFormChanged,
+                            connect_activate => AppMsg::SubmitHiddenNetwork,
+                        },
+
+                        gtk::CheckButton {
+                            set_label: Some("Rede oculta (não transmite SSID)"),
+                            #[watch]
+                            set_active: model.hidden_is_hidden,
+                            connect_toggled[sender] => move |btn| {
+                                sender.input(AppMsg::SetHiddenFlag(btn.is_active()));
+                            },
+                        },
+
+                        gtk::Box {
+                            set_orientation: gtk::Orientation::Horizontal,
+                            set_spacing: 8,
+                            set_halign: gtk::Align::End,
+
+                            gtk::Button {
+                                set_label: "Cancelar",
+                                add_css_class: "wifi-action-btn",
+                                connect_clicked => AppMsg::Navigate(ActivePage::Main),
                             },
 
                             gtk::Button {
                                 set_label: "Conectar",
                                 add_css_class: "wifi-connect-btn",
-                                connect_clicked => AppMsg::ConnectWithPassword,
+                                #[watch]
+                                set_sensitive: model.hidden_can_submit,
+                                connect_clicked => AppMsg::SubmitHiddenNetwork,
                             },
+                        },
+                    },
+                },
 
-                            gtk::Button {
-                                set_label: "Cancelar",
-                                add_css_class: "wifi-action-btn",
-                                connect_clicked => AppMsg::CancelPassword,
+                // Página: Redes Salvas (placeholder para Etapa F4)
+                add_named[Some("saved")] = &gtk::Box {
+                    set_orientation: gtk::Orientation::Vertical,
+                    set_spacing: 12,
+                    set_margin_all: 12,
+
+                    gtk::Box {
+                        set_orientation: gtk::Orientation::Horizontal,
+                        set_spacing: 8,
+
+                        gtk::Button {
+                            set_icon_name: "go-previous-symbolic",
+                            set_tooltip_text: Some("Voltar"),
+                            add_css_class: "wifi-action-btn",
+                            connect_clicked => AppMsg::Navigate(ActivePage::Main),
+                        },
+
+                        gtk::Label {
+                            set_label: "Redes salvas",
+                            add_css_class: "wifi-title",
+                        },
+                    },
+
+                    gtk::Label {
+                        set_label: "Em construção (Etapa F4).",
+                        set_vexpand: true,
+                        add_css_class: "wifi-status",
+                    },
+                },
+
+                // Página: Personalização (placeholder para Etapa F6)
+                add_named[Some("settings")] = &gtk::Box {
+                    set_orientation: gtk::Orientation::Vertical,
+                    set_spacing: 12,
+                    set_margin_all: 12,
+
+                    gtk::Box {
+                        set_orientation: gtk::Orientation::Horizontal,
+                        set_spacing: 8,
+
+                        gtk::Button {
+                            set_icon_name: "go-previous-symbolic",
+                            set_tooltip_text: Some("Voltar"),
+                            add_css_class: "wifi-action-btn",
+                            connect_clicked => AppMsg::Navigate(ActivePage::Main),
+                        },
+
+                        gtk::Label {
+                            set_label: "Personalização",
+                            add_css_class: "wifi-title",
+                        },
+                    },
+
+                    gtk::Label {
+                        set_label: "Em construção (Etapa F6).",
+                        set_vexpand: true,
+                        add_css_class: "wifi-status",
+                    },
+                },
+
+                // Página: Sobre (About)
+                add_named[Some("about")] = &gtk::Box {
+                    set_orientation: gtk::Orientation::Vertical,
+                    set_spacing: 12,
+                    set_margin_all: 12,
+
+                    gtk::Box {
+                        set_orientation: gtk::Orientation::Horizontal,
+                        set_spacing: 8,
+
+                        gtk::Button {
+                            set_icon_name: "go-previous-symbolic",
+                            set_tooltip_text: Some("Voltar"),
+                            add_css_class: "wifi-action-btn",
+                            connect_clicked => AppMsg::Navigate(ActivePage::Main),
+                        },
+
+                        gtk::Label {
+                            set_label: "Sobre",
+                            add_css_class: "wifi-title",
+                        },
+                    },
+
+                    gtk::Box {
+                        set_orientation: gtk::Orientation::Vertical,
+                        set_spacing: 10,
+                        set_halign: gtk::Align::Center,
+                        set_valign: gtk::Align::Center,
+                        set_vexpand: true,
+                        add_css_class: "wifi-about-card",
+
+                        gtk::Image {
+                            set_icon_name: Some("network-wireless-symbolic"),
+                            set_pixel_size: 48,
+                        },
+
+                        gtk::Label {
+                            set_label: env!("CARGO_PKG_NAME"),
+                            add_css_class: "wifi-title",
+                        },
+
+                        gtk::Label {
+                            set_label: &format!("Versão {}", env!("CARGO_PKG_VERSION")),
+                            add_css_class: "wifi-subtitle",
+                        },
+
+                        gtk::Label {
+                            set_label: env!("CARGO_PKG_DESCRIPTION"),
+                            set_wrap: true,
+                            set_justify: gtk::Justification::Center,
+                            add_css_class: "wifi-status",
+                        },
+
+                        gtk::Label {
+                            set_label: "Rust • GTK4 • Relm4 • zbus • Hyprland",
+                            add_css_class: "wifi-subtitle",
+                        },
+
+                        gtk::LinkButton {
+                            set_uri: env!("CARGO_PKG_REPOSITORY"),
+                            set_label: "Repositório no GitHub",
+                            connect_activate_link => |_| {
+                                if let Err(e) = std::process::Command::new("xdg-open")
+                                    .arg(env!("CARGO_PKG_REPOSITORY"))
+                                    .spawn()
+                                {
+                                    tracing::warn!("Falha ao abrir link com xdg-open: {e}");
+                                }
+                                gtk::glib::Propagation::Stop
                             },
-                        }
-                    }
-                }
+                        },
+                    },
+                },
             }
         }
     }
@@ -200,9 +520,15 @@ impl SimpleComponent for WifiApp {
         root: Self::Root,
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
+        let password_entry = gtk::PasswordEntry::new();
+        let hidden_ssid_entry = gtk::Entry::new();
+        let hidden_password_entry = gtk::PasswordEntry::new();
+        let stack = gtk::Stack::new();
+        let menu_popover = build_menu_popover(&sender);
+
         config::apply_css();
         setup_layer_shell(&root, &config);
-        setup_close_handlers(&root, &config, &sender);
+        setup_close_handlers(&root, &menu_popover, &config, &sender);
 
         let networks = FactoryVecDeque::builder()
             .launch(gtk::ListBox::default())
@@ -215,10 +541,9 @@ impl SimpleComponent for WifiApp {
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         spawn_dbus_worker(sender.clone(), cmd_rx);
 
-        let password_entry = gtk::PasswordEntry::new();
-
         let model = Self {
             config,
+            active_page: ActivePage::Main,
             interface: String::new(),
             wifi_enabled: false,
             scanning: false,
@@ -226,12 +551,22 @@ impl SimpleComponent for WifiApp {
             pending_network: None,
             networks,
             password_entry: password_entry.clone(),
+            hidden_ssid_entry: hidden_ssid_entry.clone(),
+            hidden_password_entry: hidden_password_entry.clone(),
+            hidden_security: WifiSecurity::WpaPsk,
+            hidden_is_hidden: true,
+            hidden_can_submit: false,
+            stack: stack.clone(),
+            menu_popover,
             cmd_tx,
             connect_requested: false,
         };
 
+        let stack = &model.stack;
         let networks_box = model.networks.widget();
         let password_entry = &model.password_entry;
+        let hidden_ssid_entry = &model.hidden_ssid_entry;
+        let hidden_password_entry = &model.hidden_password_entry;
         let widgets = view_output!();
 
         ComponentParts { model, widgets }
@@ -239,6 +574,11 @@ impl SimpleComponent for WifiApp {
 
     fn update(&mut self, msg: Self::Input, _sender: ComponentSender<Self>) {
         match msg {
+            AppMsg::Navigate(page) => {
+                self.menu_popover.popdown();
+                self.active_page = page;
+                self.stack.set_visible_child_name(page.stack_name());
+            }
             AppMsg::ToggleWifi(enabled) => {
                 if self.wifi_enabled == enabled {
                     return;
@@ -289,8 +629,49 @@ impl SimpleComponent for WifiApp {
                 self.password_entry.set_text("");
                 self.status_text = "Conexão cancelada".to_string();
             }
+            AppMsg::SetHiddenSecurity(sec) => {
+                self.hidden_security = sec;
+                self.refresh_hidden_can_submit();
+            }
+            AppMsg::SetHiddenFlag(hidden) => {
+                self.hidden_is_hidden = hidden;
+            }
+            AppMsg::HiddenFormChanged => {
+                self.refresh_hidden_can_submit();
+            }
+            AppMsg::SubmitHiddenNetwork => {
+                if !self.hidden_can_submit {
+                    return;
+                }
+                let ssid = self.hidden_ssid_entry.text().trim().to_string();
+                let password = if self.hidden_security == WifiSecurity::Open {
+                    None
+                } else {
+                    Some(self.hidden_password_entry.text().to_string())
+                };
+                let security = self.hidden_security;
+                let hidden = self.hidden_is_hidden;
+
+                self.hidden_ssid_entry.set_text("");
+                self.hidden_password_entry.set_text("");
+                self.hidden_can_submit = false;
+                self.connect_requested = true;
+                self.active_page = ActivePage::Main;
+                self.stack.set_visible_child_name(ActivePage::Main.stack_name());
+                self.status_text = format!("Conectando em \"{ssid}\"...");
+
+                let _ = self.cmd_tx.send(BackendCmd::ConnectHidden {
+                    ssid,
+                    security,
+                    password,
+                    hidden,
+                });
+            }
             AppMsg::EscapePressed => {
-                if self.pending_network.is_some() {
+                if self.active_page != ActivePage::Main {
+                    self.active_page = ActivePage::Main;
+                    self.stack.set_visible_child_name(ActivePage::Main.stack_name());
+                } else if self.pending_network.is_some() {
                     self.pending_network = None;
                     self.password_entry.set_text("");
                     self.status_text = "Conexão cancelada".to_string();
@@ -348,6 +729,15 @@ impl SimpleComponent for WifiApp {
                 self.scanning = false;
             }
         }
+    }
+}
+
+impl WifiApp {
+    fn refresh_hidden_can_submit(&mut self) {
+        let has_ssid = !self.hidden_ssid_entry.text().trim().is_empty();
+        let has_pass = self.hidden_security == WifiSecurity::Open
+            || !self.hidden_password_entry.text().is_empty();
+        self.hidden_can_submit = has_ssid && has_pass;
     }
 }
 
@@ -477,6 +867,22 @@ async fn handle_backend_cmd(
                 Err(e) => sender.input(AppMsg::BackendError(format!("Conectar: {e}"))),
             }
         }
+        BackendCmd::ConnectHidden {
+            ssid,
+            security,
+            password,
+            hidden,
+        } => {
+            match manager
+                .connect_hidden(&ssid, security, password.as_deref(), hidden)
+                .await
+            {
+                Ok(()) => sender.input(AppMsg::BackendStatus(format!(
+                    "Conexão solicitada para \"{ssid}\""
+                ))),
+                Err(e) => sender.input(AppMsg::BackendError(format!("Rede oculta: {e}"))),
+            }
+        }
         BackendCmd::Disconnect => {
             if let Err(e) = manager.disconnect().await {
                 sender.input(AppMsg::BackendError(format!("Desconectar: {e}")));
@@ -524,6 +930,37 @@ async fn emit_snapshot(manager: &WifiManager, sender: &ComponentSender<WifiApp>)
     });
 }
 
+fn build_menu_popover(sender: &ComponentSender<WifiApp>) -> gtk::Popover {
+    let popover = gtk::Popover::new();
+    popover.add_css_class("wifi-menu-popover");
+
+    let vbox = gtk::Box::new(gtk::Orientation::Vertical, 4);
+
+    let items = [
+        ("Redes salvas", ActivePage::SavedNetworks),
+        ("Personalização", ActivePage::Settings),
+        ("Sobre", ActivePage::About),
+    ];
+
+    for (label, page) in items {
+        let btn = gtk::Button::with_label(label);
+        btn.set_has_frame(false);
+        btn.add_css_class("wifi-popover-btn");
+        if let Some(child) = btn.child().and_then(|c| c.downcast::<gtk::Label>().ok()) {
+            child.set_halign(gtk::Align::Start);
+        }
+
+        let sender_clone = sender.clone();
+        btn.connect_clicked(move |_| {
+            sender_clone.input(AppMsg::Navigate(page));
+        });
+        vbox.append(&btn);
+    }
+
+    popover.set_child(Some(&vbox));
+    popover
+}
+
 fn setup_layer_shell(window: &gtk::ApplicationWindow, config: &AppConfig) {
     if !gtk4_layer_shell::is_supported() {
         tracing::warn!(
@@ -568,6 +1005,7 @@ fn setup_layer_shell(window: &gtk::ApplicationWindow, config: &AppConfig) {
 
 fn setup_close_handlers(
     window: &gtk::ApplicationWindow,
+    menu_popover: &gtk::Popover,
     config: &AppConfig,
     sender: &ComponentSender<WifiApp>,
 ) {
@@ -585,12 +1023,25 @@ fn setup_close_handlers(
 
     if config.close_on_focus_loss {
         let was_active = Cell::new(false);
+        let popover_ref = menu_popover.clone();
         window.connect_is_active_notify(move |win| {
             if win.is_active() {
                 was_active.set(true);
-            } else if was_active.get() {
+            } else if was_active.get() && !popover_ref.is_visible() {
                 relm4::main_application().quit();
             }
+        });
+
+        let win_weak = window.downgrade();
+        menu_popover.connect_closed(move |_| {
+            let win_weak = win_weak.clone();
+            gtk::glib::idle_add_local_once(move || {
+                if let Some(win) = win_weak.upgrade()
+                    && !win.is_active()
+                {
+                    relm4::main_application().quit();
+                }
+            });
         });
     }
 }

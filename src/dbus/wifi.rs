@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use futures::StreamExt;
 use zbus::Connection;
-use zbus::zvariant::{OwnedObjectPath, Value};
+use zbus::zvariant::{ObjectPath, OwnedObjectPath, Value};
 
 use super::proxies::{
     AccessPointProxy, DeviceProxy, NetworkManagerProxy, SettingsConnectionProxy, SettingsProxy,
@@ -11,6 +11,14 @@ use super::proxies::{
 
 /// Valor de `NMDeviceType` para interfaces Wi-Fi (802.11).
 const NM_DEVICE_TYPE_WIFI: u32 = 2;
+
+/// Tipo de segurança para conexão manual (redes ocultas).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WifiSecurity {
+    Open,
+    WpaPsk,
+    Sae,
+}
 
 /// Representa uma rede Wi-Fi agrupada por SSID.
 #[derive(Debug, Clone)]
@@ -177,6 +185,61 @@ impl WifiManager {
         }
 
         nm.add_and_activate_connection(settings, &self.device_path, &network.path)
+            .await?;
+
+        Ok(())
+    }
+
+    /// Conecta manualmente a uma rede (ex: rede oculta) sem precisar de um AP visível no scan.
+    pub async fn connect_hidden(
+        &self,
+        ssid: &str,
+        security: WifiSecurity,
+        password: Option<&str>,
+        hidden: bool,
+    ) -> zbus::Result<()> {
+        let nm = NetworkManagerProxy::new(&self.connection).await?;
+        let saved_map = self.saved_connections_by_ssid().await?;
+        let root_obj = ObjectPath::try_from("/").map_err(zbus::Error::Variant)?;
+
+        if let Some(saved_path) = saved_map.get(ssid) {
+            nm.activate_connection(saved_path, &self.device_path, &root_obj)
+                .await?;
+            return Ok(());
+        }
+
+        let mut conn_section: HashMap<&str, Value<'_>> = HashMap::new();
+        conn_section.insert("type", Value::from("802-11-wireless"));
+        conn_section.insert("id", Value::from(ssid));
+
+        let mut wifi_section: HashMap<&str, Value<'_>> = HashMap::new();
+        wifi_section.insert("ssid", Value::from(ssid.as_bytes().to_vec()));
+        wifi_section.insert("mode", Value::from("infrastructure"));
+        if hidden {
+            wifi_section.insert("hidden", Value::from(true));
+        }
+
+        let mut settings: HashMap<&str, HashMap<&str, Value<'_>>> = HashMap::new();
+        settings.insert("connection", conn_section);
+        settings.insert("802-11-wireless", wifi_section);
+
+        match security {
+            WifiSecurity::Open => {}
+            WifiSecurity::WpaPsk => {
+                let mut sec_section: HashMap<&str, Value<'_>> = HashMap::new();
+                sec_section.insert("key-mgmt", Value::from("wpa-psk"));
+                sec_section.insert("psk", Value::from(password.unwrap_or("")));
+                settings.insert("802-11-wireless-security", sec_section);
+            }
+            WifiSecurity::Sae => {
+                let mut sec_section: HashMap<&str, Value<'_>> = HashMap::new();
+                sec_section.insert("key-mgmt", Value::from("sae"));
+                sec_section.insert("psk", Value::from(password.unwrap_or("")));
+                settings.insert("802-11-wireless-security", sec_section);
+            }
+        }
+
+        nm.add_and_activate_connection(settings, &self.device_path, &root_obj)
             .await?;
 
         Ok(())

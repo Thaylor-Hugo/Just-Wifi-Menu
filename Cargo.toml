@@ -2,6 +2,8 @@
 name = "Just-Wifi-Menu"
 version = "0.1.0"
 edition = "2024"
+description = "Menu Wi-Fi customizável para Hyprland/Wayland em Rust, GTK4, Relm4 e zbus"
+repository = "https://github.com/Thaylor-Hugo/Just-Wifi-Menu"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
