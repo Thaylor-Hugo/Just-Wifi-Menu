@@ -2,11 +2,11 @@ use std::collections::HashMap;
 
 use futures::StreamExt;
 use zbus::Connection;
-use zbus::zvariant::{ObjectPath, OwnedObjectPath, Value};
+use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue, Value};
 
 use super::proxies::{
-    AccessPointProxy, DeviceProxy, NetworkManagerProxy, SettingsConnectionProxy, SettingsProxy,
-    WirelessDeviceProxy,
+    AccessPointProxy, DeviceProxy, IP4ConfigProxy, NetworkManagerProxy, SettingsConnectionProxy,
+    SettingsProxy, WirelessDeviceProxy,
 };
 
 /// Valor de `NMDeviceType` para interfaces Wi-Fi (802.11).
@@ -30,6 +30,16 @@ pub struct WifiNetwork {
     pub connected: bool,
     pub saved: bool,
     pub path: OwnedObjectPath,
+}
+
+/// Detalhes contextuais exibidos ao expandir uma rede na lista.
+#[derive(Debug, Clone)]
+pub struct NetworkDetails {
+    pub ssid: String,
+    pub ipv4: Option<String>,
+    pub gateway: Option<String>,
+    pub autoconnect: Option<bool>,
+    pub security_label: String,
 }
 
 /// Centraliza operações de Wi-Fi sobre uma interface específica do NetworkManager.
@@ -270,6 +280,127 @@ impl WifiManager {
         Ok(true)
     }
 
+    /// Coleta detalhes contextuais de uma rede (IPv4/Gateway se conectada, autoconnect se salva).
+    pub async fn network_details(&self, network: &WifiNetwork) -> zbus::Result<NetworkDetails> {
+        let mut ipv4 = None;
+        let mut gateway = None;
+
+        if network.connected {
+            let device = DeviceProxy::builder(&self.connection)
+                .path(self.device_path.as_str())?
+                .build()
+                .await?;
+            let ip4_path = device.ip4_config().await?;
+            if ip4_path.as_str() != "/" {
+                let ip4 = IP4ConfigProxy::builder(&self.connection)
+                    .path(ip4_path.as_str())?
+                    .build()
+                    .await?;
+                if let Ok(addrs) = ip4.address_data().await
+                    && let Some(first) = addrs.first()
+                    && let (Some(addr_val), Some(prefix_val)) =
+                        (first.get("address"), first.get("prefix"))
+                    && let (Ok(addr), Ok(prefix)) = (
+                        String::try_from(addr_val.try_clone()?),
+                        u32::try_from(prefix_val.try_clone()?),
+                    )
+                {
+                    ipv4 = Some(format!("{addr}/{prefix}"));
+                }
+
+                if let Ok(gw) = ip4.gateway().await
+                    && !gw.is_empty()
+                {
+                    gateway = Some(gw);
+                }
+            }
+        }
+
+        let mut autoconnect = None;
+        let mut security_label = if network.secured {
+            "Protegida (WPA/WPA2/WPA3)".to_string()
+        } else {
+            "Aberta".to_string()
+        };
+
+        if network.saved {
+            let saved_map = self.saved_connections_by_ssid().await?;
+            if let Some(conn_path) = saved_map.get(&network.ssid) {
+                let conn_proxy = SettingsConnectionProxy::builder(&self.connection)
+                    .path(conn_path.as_str())?
+                    .build()
+                    .await?;
+                if let Ok(settings) = conn_proxy.get_settings().await {
+                    let auto = settings
+                        .get("connection")
+                        .and_then(|c| c.get("autoconnect"))
+                        .and_then(|v| bool::try_from(v.try_clone().ok()?).ok())
+                        .unwrap_or(true);
+                    autoconnect = Some(auto);
+
+                    if let Some(km) = settings
+                        .get("802-11-wireless-security")
+                        .and_then(|s| s.get("key-mgmt"))
+                        .and_then(|v| String::try_from(v.try_clone().ok()?).ok())
+                    {
+                        security_label = format_key_mgmt(&km).to_string();
+                    }
+                }
+            }
+        }
+
+        Ok(NetworkDetails {
+            ssid: network.ssid.clone(),
+            ipv4,
+            gateway,
+            autoconnect,
+            security_label,
+        })
+    }
+
+    /// Busca a senha salva de um perfil Wi-Fi sob demanda via `GetSecrets`.
+    pub async fn get_saved_password(&self, ssid: &str) -> zbus::Result<Option<String>> {
+        let saved_map = self.saved_connections_by_ssid().await?;
+        let Some(conn_path) = saved_map.get(ssid) else {
+            return Ok(None);
+        };
+
+        let conn_proxy = SettingsConnectionProxy::builder(&self.connection)
+            .path(conn_path.as_str())?
+            .build()
+            .await?;
+
+        let secrets = conn_proxy.get_secrets("802-11-wireless-security").await?;
+        let Some(sec) = secrets.get("802-11-wireless-security") else {
+            return Ok(None);
+        };
+
+        let key = sec.get("psk").or_else(|| sec.get("wep-key0"));
+        let Some(val) = key else {
+            return Ok(None);
+        };
+
+        Ok(String::try_from(val.try_clone()?).ok())
+    }
+
+    /// Atualiza `connection.autoconnect` no perfil salvo de um SSID.
+    pub async fn set_autoconnect(&self, ssid: &str, enabled: bool) -> zbus::Result<()> {
+        let saved_map = self.saved_connections_by_ssid().await?;
+        let Some(conn_path) = saved_map.get(ssid) else {
+            return Ok(());
+        };
+
+        let conn_proxy = SettingsConnectionProxy::builder(&self.connection)
+            .path(conn_path.as_str())?
+            .build()
+            .await?;
+
+        let mut settings = conn_proxy.get_settings().await?;
+        let conn_section = settings.entry("connection".to_string()).or_default();
+        conn_section.insert("autoconnect".to_string(), OwnedValue::from(enabled));
+        conn_proxy.update(settings).await
+    }
+
     /// Escuta sinais do NetworkManager em tempo real até Ctrl+C.
     pub async fn watch_events(&self) -> zbus::Result<()> {
         let nm = NetworkManagerProxy::new(&self.connection).await?;
@@ -358,6 +489,17 @@ impl WifiManager {
         }
 
         Ok(map)
+    }
+}
+
+/// Formata o identificador `key-mgmt` do NetworkManager para exibição.
+pub fn format_key_mgmt(key_mgmt: &str) -> &'static str {
+    match key_mgmt {
+        "wpa-psk" => "WPA/WPA2-PSK",
+        "sae" => "WPA3-SAE",
+        "wpa-eap" => "WPA-Enterprise",
+        "none" => "WEP",
+        _ => "Protegida",
     }
 }
 

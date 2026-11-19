@@ -113,3 +113,13 @@
     border-radius: 12px;
     background-color: @menu_surface;
 }
+
+.wifi-row-expand-btn {
+    padding: 0;
+}
+
+.wifi-details-box {
+    padding: 8px;
+    border-radius: 8px;
+    background-color: rgba(17, 17, 27, 0.45);
+}

@@ -14,8 +14,8 @@ use tokio::sync::mpsc;
 use crate::config::{self, AppConfig};
 use crate::dbus;
 use crate::dbus::proxies::{DeviceProxy, NetworkManagerProxy, WirelessDeviceProxy};
-use crate::dbus::wifi::{WifiManager, WifiNetwork, WifiSecurity};
-use network_row::{NetworkRow, NetworkRowOutput};
+use crate::dbus::wifi::{NetworkDetails, WifiManager, WifiNetwork, WifiSecurity};
+use network_row::{NetworkRow, NetworkRowInit, NetworkRowMsg, NetworkRowOutput};
 
 #[derive(Debug)]
 enum BackendCmd {
@@ -33,6 +33,12 @@ enum BackendCmd {
     },
     Disconnect,
     Forget(String),
+    FetchDetails(WifiNetwork),
+    FetchPassword(String),
+    SetAutoconnect {
+        ssid: String,
+        enabled: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,6 +77,21 @@ pub enum AppMsg {
     EscapePressed,
     Disconnect,
     Forget(String),
+    ToggleExpandRow(WifiNetwork),
+    FetchPassword {
+        ssid: String,
+        visible: bool,
+    },
+    CopyPassword(String),
+    SetAutoconnect {
+        ssid: String,
+        enabled: bool,
+    },
+    DetailsLoaded(NetworkDetails),
+    PasswordLoaded {
+        ssid: String,
+        password: Option<String>,
+    },
     BackendState {
         interface: String,
         wifi_enabled: bool,
@@ -89,6 +110,11 @@ pub struct WifiApp {
     scanning: bool,
     status_text: String,
     pending_network: Option<WifiNetwork>,
+    expanded_ssid: Option<String>,
+    expanded_details: Option<NetworkDetails>,
+    expanded_password: Option<String>,
+    expanded_password_visible: bool,
+    pending_copy_password: bool,
     networks: FactoryVecDeque<NetworkRow>,
     password_entry: gtk::PasswordEntry,
     hidden_ssid_entry: gtk::Entry,
@@ -533,9 +559,18 @@ impl SimpleComponent for WifiApp {
         let networks = FactoryVecDeque::builder()
             .launch(gtk::ListBox::default())
             .forward(sender.input_sender(), |output| match output {
+                NetworkRowOutput::ToggleExpand(net) => AppMsg::ToggleExpandRow(net),
                 NetworkRowOutput::Connect(net) => AppMsg::SelectNetwork(net),
                 NetworkRowOutput::Disconnect => AppMsg::Disconnect,
                 NetworkRowOutput::Forget(ssid) => AppMsg::Forget(ssid),
+                NetworkRowOutput::FetchPassword { ssid, visible } => {
+                    AppMsg::FetchPassword { ssid, visible }
+                }
+                NetworkRowOutput::CopyPassword(ssid) => AppMsg::CopyPassword(ssid),
+                NetworkRowOutput::SetAutoconnect { ssid, enabled } => {
+                    AppMsg::SetAutoconnect { ssid, enabled }
+                }
+                NetworkRowOutput::CopiedFeedback(msg) => AppMsg::BackendStatus(msg),
             });
 
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
@@ -549,6 +584,11 @@ impl SimpleComponent for WifiApp {
             scanning: false,
             status_text: "Conectando ao NetworkManager...".to_string(),
             pending_network: None,
+            expanded_ssid: None,
+            expanded_details: None,
+            expanded_password: None,
+            expanded_password_visible: false,
+            pending_copy_password: false,
             networks,
             password_entry: password_entry.clone(),
             hidden_ssid_entry: hidden_ssid_entry.clone(),
@@ -688,6 +728,96 @@ impl SimpleComponent for WifiApp {
                 self.status_text = format!("Removendo perfil \"{ssid}\"...");
                 let _ = self.cmd_tx.send(BackendCmd::Forget(ssid));
             }
+            AppMsg::ToggleExpandRow(net) => {
+                let collapsing = self.expanded_ssid.as_deref() == Some(&net.ssid);
+                if collapsing {
+                    self.expanded_ssid = None;
+                    self.expanded_details = None;
+                    self.expanded_password = None;
+                    self.expanded_password_visible = false;
+                    self.pending_copy_password = false;
+                } else {
+                    self.expanded_ssid = Some(net.ssid.clone());
+                    self.expanded_details = None;
+                    self.expanded_password = None;
+                    self.expanded_password_visible = false;
+                    self.pending_copy_password = false;
+                    let _ = self.cmd_tx.send(BackendCmd::FetchDetails(net.clone()));
+                }
+
+                let guard = self.networks.guard();
+                for idx in 0..guard.len() {
+                    let is_target = self
+                        .expanded_ssid
+                        .as_deref()
+                        .is_some_and(|ssid| guard[idx].network.ssid == ssid);
+                    guard.send(
+                        idx,
+                        NetworkRowMsg::SetExpanded {
+                            expanded: is_target,
+                            details: None,
+                            password: None,
+                        },
+                    );
+                }
+            }
+            AppMsg::FetchPassword { ssid, visible } => {
+                self.expanded_password_visible = visible;
+                if visible && self.expanded_password.is_none() {
+                    let _ = self.cmd_tx.send(BackendCmd::FetchPassword(ssid));
+                }
+            }
+            AppMsg::CopyPassword(ssid) => {
+                if let Some(pw) = &self.expanded_password {
+                    if let Some(display) = gdk::Display::default() {
+                        display.clipboard().set_text(pw);
+                        self.status_text = "Senha copiada".to_string();
+                    }
+                } else {
+                    self.pending_copy_password = true;
+                    let _ = self.cmd_tx.send(BackendCmd::FetchPassword(ssid));
+                }
+            }
+            AppMsg::SetAutoconnect { ssid, enabled } => {
+                let _ = self
+                    .cmd_tx
+                    .send(BackendCmd::SetAutoconnect { ssid, enabled });
+            }
+            AppMsg::DetailsLoaded(details) => {
+                if self.expanded_ssid.as_deref() != Some(&details.ssid) {
+                    return;
+                }
+                self.expanded_details = Some(details.clone());
+                let guard = self.networks.guard();
+                for idx in 0..guard.len() {
+                    if guard[idx].network.ssid == details.ssid {
+                        guard.send(idx, NetworkRowMsg::SetDetails(details));
+                        break;
+                    }
+                }
+            }
+            AppMsg::PasswordLoaded { ssid, password } => {
+                if self.expanded_ssid.as_deref() != Some(&ssid) {
+                    return;
+                }
+                self.expanded_password = password.clone();
+                if self.pending_copy_password {
+                    self.pending_copy_password = false;
+                    if let Some(pw) = &password
+                        && let Some(display) = gdk::Display::default()
+                    {
+                        display.clipboard().set_text(pw);
+                        self.status_text = "Senha copiada".to_string();
+                    }
+                }
+                let guard = self.networks.guard();
+                for idx in 0..guard.len() {
+                    if guard[idx].network.ssid == ssid {
+                        guard.send(idx, NetworkRowMsg::SetPassword(password));
+                        break;
+                    }
+                }
+            }
             AppMsg::BackendState {
                 interface,
                 wifi_enabled,
@@ -710,7 +840,24 @@ impl SimpleComponent for WifiApp {
                         .into_iter()
                         .filter(|n| n.connected || n.strength >= min_strength)
                     {
-                        guard.push_back(net);
+                        let is_expanded = self.expanded_ssid.as_deref() == Some(&net.ssid);
+                        let details = if is_expanded {
+                            self.expanded_details.clone()
+                        } else {
+                            None
+                        };
+                        let password = if is_expanded {
+                            self.expanded_password.clone()
+                        } else {
+                            None
+                        };
+                        guard.push_back(NetworkRowInit {
+                            network: net,
+                            expanded: is_expanded,
+                            details,
+                            password,
+                            password_visible: is_expanded && self.expanded_password_visible,
+                        });
                     }
                     self.status_text = format!("{} rede(s) encontrada(s)", guard.len());
                 } else {
@@ -897,6 +1044,23 @@ async fn handle_backend_cmd(
                     "Perfil \"{ssid}\" não encontrado"
                 ))),
                 Err(e) => sender.input(AppMsg::BackendError(format!("Esquecer: {e}"))),
+            }
+        }
+        BackendCmd::FetchDetails(net) => {
+            match manager.network_details(&net).await {
+                Ok(details) => sender.input(AppMsg::DetailsLoaded(details)),
+                Err(e) => sender.input(AppMsg::BackendError(format!("Detalhes: {e}"))),
+            }
+        }
+        BackendCmd::FetchPassword(ssid) => {
+            match manager.get_saved_password(&ssid).await {
+                Ok(password) => sender.input(AppMsg::PasswordLoaded { ssid, password }),
+                Err(e) => sender.input(AppMsg::BackendError(format!("Senha: {e}"))),
+            }
+        }
+        BackendCmd::SetAutoconnect { ssid, enabled } => {
+            if let Err(e) = manager.set_autoconnect(&ssid, enabled).await {
+                sender.input(AppMsg::BackendError(format!("Auto-reconectar: {e}")));
             }
         }
     }

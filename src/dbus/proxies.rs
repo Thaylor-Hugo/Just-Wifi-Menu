@@ -46,6 +46,21 @@ pub trait Device {
 
     #[zbus(property)]
     fn state(&self) -> zbus::Result<u32>;
+
+    #[zbus(property)]
+    fn ip4_config(&self) -> zbus::Result<OwnedObjectPath>;
+}
+
+#[proxy(
+    interface = "org.freedesktop.NetworkManager.IP4Config",
+    default_service = "org.freedesktop.NetworkManager"
+)]
+pub trait IP4Config {
+    #[zbus(property)]
+    fn address_data(&self) -> zbus::Result<Vec<HashMap<String, OwnedValue>>>;
+
+    #[zbus(property)]
+    fn gateway(&self) -> zbus::Result<String>;
 }
 
 #[proxy(
@@ -106,6 +121,16 @@ pub trait Settings {
 )]
 pub trait SettingsConnection {
     fn get_settings(&self) -> zbus::Result<HashMap<String, HashMap<String, OwnedValue>>>;
+
+    fn get_secrets(
+        &self,
+        setting_name: &str,
+    ) -> zbus::Result<HashMap<String, HashMap<String, OwnedValue>>>;
+
+    fn update(
+        &self,
+        properties: HashMap<String, HashMap<String, OwnedValue>>,
+    ) -> zbus::Result<()>;
 
     fn delete(&self) -> zbus::Result<()>;
 }
