@@ -20,6 +20,7 @@ pub struct AppConfig {
     pub close_on_connect: bool,
     pub close_on_focus_loss: bool,
     pub min_signal_strength: u8,
+    pub auto_scan_interval_secs: u64,
     pub anchor: String,
     pub margin_top: i32,
     pub margin_right: i32,
@@ -44,6 +45,7 @@ impl Default for AppConfig {
             close_on_connect: false,
             close_on_focus_loss: true,
             min_signal_strength: 0,
+            auto_scan_interval_secs: 15,
             anchor: "top-right".to_string(),
             margin_top: 8,
             margin_right: 8,
@@ -219,6 +221,10 @@ fn build_dynamic_css(config: &AppConfig) -> String {
 }}
 
 .wifi-row {{
+    padding: 0;
+}}
+
+.wifi-row-expand-btn {{
     padding: {pad}px 10px;
 }}
 

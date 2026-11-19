@@ -47,6 +47,7 @@ enum BackendCmd {
         enabled: bool,
     },
     ListSaved,
+    SetAutoScanInterval(u64),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,7 +88,7 @@ pub enum ColorTarget {
 #[derive(Debug)]
 pub enum AppMsg {
     Navigate(ActivePage),
-    SetLanguage(Language),
+    ToggleLanguage,
     ApplyThemePreset(ThemePreset),
     SetPrimaryColor,
     SetSecondaryColor,
@@ -104,6 +105,7 @@ pub enum AppMsg {
     SetCloseOnConnect(bool),
     SetCloseOnFocusLoss(bool),
     SetMinSignal(u8),
+    SetAutoScanInterval(u64),
     OpenConfigFile,
     OpenStyleFile,
     LaunchWithApp(usize),
@@ -272,6 +274,19 @@ impl SimpleComponent for WifiApp {
                                 sender.input(AppMsg::ToggleWifi(enabled));
                                 gtk::glib::Propagation::Proceed
                             }
+                        },
+
+                        gtk::Button {
+                            #[watch]
+                            set_label: match model.config.language {
+                                Language::Pt => "PT",
+                                Language::En => "EN",
+                            },
+                            #[watch]
+                            set_tooltip_text: Some(i18n::strings(model.config.language).language_tooltip),
+                            set_valign: gtk::Align::Center,
+                            add_css_class: "wifi-icon-btn",
+                            connect_clicked => AppMsg::ToggleLanguage,
                         },
 
                         gtk::MenuButton {
@@ -668,33 +683,6 @@ impl SimpleComponent for WifiApp {
                                     add_css_class: "wifi-ssid",
                                 },
 
-                                gtk::Box {
-                                    set_orientation: gtk::Orientation::Horizontal,
-                                    set_spacing: 8,
-
-                                    gtk::Label {
-                                        #[watch]
-                                        set_label: i18n::strings(model.config.language).language_label,
-                                        set_hexpand: true,
-                                        set_halign: gtk::Align::Start,
-                                        add_css_class: "wifi-subtitle",
-                                    },
-
-                                    gtk::ToggleButton {
-                                        set_label: "PT",
-                                        #[watch]
-                                        set_active: model.config.language == Language::Pt,
-                                        connect_clicked => AppMsg::SetLanguage(Language::Pt),
-                                    },
-
-                                    gtk::ToggleButton {
-                                        set_label: "EN",
-                                        #[watch]
-                                        set_active: model.config.language == Language::En,
-                                        connect_clicked => AppMsg::SetLanguage(Language::En),
-                                    },
-                                },
-
                                 gtk::Label {
                                     #[watch]
                                     set_label: i18n::strings(model.config.language).theme_presets_label,
@@ -1082,6 +1070,31 @@ impl SimpleComponent for WifiApp {
                                         sender.input(AppMsg::SetCloseOnFocusLoss(btn.is_active()));
                                     },
                                 },
+
+                                gtk::Box {
+                                    set_orientation: gtk::Orientation::Horizontal,
+                                    set_spacing: 8,
+
+                                    gtk::Label {
+                                        #[watch]
+                                        set_label: i18n::strings(model.config.language).auto_scan_label,
+                                        set_hexpand: true,
+                                        set_halign: gtk::Align::Start,
+                                        add_css_class: "wifi-subtitle",
+                                    },
+
+                                    gtk::SpinButton::with_range(0.0, 120.0, 5.0) {
+                                        set_value: model.config.auto_scan_interval_secs as f64,
+                                        connect_realize => |spin| {
+                                            disable_scroll_until_focused(spin);
+                                        },
+                                        connect_value_changed[sender] => move |spin| {
+                                            sender.input(AppMsg::SetAutoScanInterval(
+                                                spin.value_as_int().max(0) as u64,
+                                            ));
+                                        },
+                                    },
+                                },
                             },
                         },
                     },
@@ -1232,7 +1245,7 @@ impl SimpleComponent for WifiApp {
             });
 
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
-        spawn_dbus_worker(sender.clone(), cmd_rx);
+        spawn_dbus_worker(sender.clone(), cmd_rx, config.auto_scan_interval_secs);
 
         let initial_status = i18n::strings(config.language).connecting_nm.to_string();
 
@@ -1299,10 +1312,11 @@ impl SimpleComponent for WifiApp {
                     let _ = self.cmd_tx.send(BackendCmd::ListSaved);
                 }
             }
-            AppMsg::SetLanguage(lang) => {
-                if self.config.language == lang {
-                    return;
-                }
+            AppMsg::ToggleLanguage => {
+                let lang = match self.config.language {
+                    Language::Pt => Language::En,
+                    Language::En => Language::Pt,
+                };
                 self.config.language = lang;
                 self.config.save();
                 let s = i18n::strings(lang);
@@ -1499,6 +1513,14 @@ impl SimpleComponent for WifiApp {
                 }
                 self.config.min_signal_strength = val;
                 self.config.save();
+            }
+            AppMsg::SetAutoScanInterval(secs) => {
+                if self.config.auto_scan_interval_secs == secs {
+                    return;
+                }
+                self.config.auto_scan_interval_secs = secs;
+                self.config.save();
+                let _ = self.cmd_tx.send(BackendCmd::SetAutoScanInterval(secs));
             }
             AppMsg::OpenConfigFile => {
                 if let Some((_, config_path, _)) = config::paths() {
@@ -1881,6 +1903,7 @@ impl WifiApp {
 fn spawn_dbus_worker(
     sender: ComponentSender<WifiApp>,
     mut cmd_rx: mpsc::UnboundedReceiver<BackendCmd>,
+    initial_auto_scan_secs: u64,
 ) {
     std::thread::spawn(move || {
         let Ok(rt) = tokio::runtime::Builder::new_current_thread()
@@ -1948,14 +1971,35 @@ fn spawn_dbus_worker(
             let mut active_ap_changed = wireless.receive_active_access_point_changed().await;
             let mut device_state_changed = device.receive_state_changed().await;
 
+            let mut auto_scan_secs = initial_auto_scan_secs;
+
             loop {
+                let sleep_fut = async {
+                    if auto_scan_secs > 0 {
+                        tokio::time::sleep(std::time::Duration::from_secs(auto_scan_secs)).await;
+                    } else {
+                        std::future::pending::<()>().await;
+                    }
+                };
+
                 tokio::select! {
                     maybe_cmd = cmd_rx.recv() => {
                         let Some(cmd) = maybe_cmd else {
                             break;
                         };
+                        if let BackendCmd::SetAutoScanInterval(secs) = cmd {
+                            auto_scan_secs = secs;
+                            continue;
+                        }
                         handle_backend_cmd(&manager, cmd, &sender).await;
                         emit_snapshot(&manager, &sender).await;
+                    }
+                    _ = sleep_fut => {
+                        if manager.is_wireless_enabled().await.unwrap_or(false)
+                            && let Err(e) = manager.request_scan().await
+                        {
+                            tracing::debug!("Auto-scan ignorado: {e}");
+                        }
                     }
                     Some(_) = ap_added.next() => {
                         emit_snapshot(&manager, &sender).await;
@@ -2043,6 +2087,7 @@ async fn handle_backend_cmd(
             Ok(list) => sender.input(AppMsg::SavedNetworksLoaded(list)),
             Err(e) => sender.input(AppMsg::BackendError(format!("Redes salvas: {e}"))),
         },
+        BackendCmd::SetAutoScanInterval(_) => {}
         BackendCmd::FetchDetails(net) => {
             match manager.network_details(&net).await {
                 Ok(details) => sender.input(AppMsg::DetailsLoaded(details)),

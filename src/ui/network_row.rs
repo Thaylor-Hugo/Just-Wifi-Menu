@@ -142,6 +142,7 @@ impl FactoryComponent for NetworkRow {
                         i18n::strings(self.lang).connect
                     },
                     set_valign: gtk::Align::Center,
+                    set_margin_end: 8,
                     add_css_class: "wifi-action-btn",
                     connect_clicked[sender, net = self.network.clone()] => move |_| {
                         let msg = if net.connected {
