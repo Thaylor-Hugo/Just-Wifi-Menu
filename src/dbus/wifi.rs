@@ -574,24 +574,6 @@ impl WifiManager {
     }
 }
 
-/// Formata um timestamp Unix (segundos) em tempo relativo legível.
-pub fn format_last_connected(timestamp: u64, now_secs: u64) -> String {
-    if timestamp == 0 {
-        return "Nunca".to_string();
-    }
-
-    let diff = now_secs.saturating_sub(timestamp);
-    if diff < 60 {
-        "Agora mesmo".to_string()
-    } else if diff < 3600 {
-        format!("Há {} min", diff / 60)
-    } else if diff < 86_400 {
-        format!("Há {} h", diff / 3600)
-    } else {
-        format!("Há {} dia(s)", diff / 86_400)
-    }
-}
-
 /// Formata o identificador `key-mgmt` do NetworkManager para exibição.
 pub fn format_key_mgmt(key_mgmt: &str) -> &'static str {
     match key_mgmt {
@@ -675,14 +657,5 @@ mod tests {
             ordered,
             vec!["Conectada_Fraca", "Salva_Media", "Forte_Aberta", "Fraca"]
         );
-    }
-
-    #[test]
-    fn format_last_connected_formats_relative_times() {
-        assert_eq!(format_last_connected(0, 10_000), "Nunca");
-        assert_eq!(format_last_connected(9_970, 10_000), "Agora mesmo");
-        assert_eq!(format_last_connected(9_400, 10_000), "Há 10 min");
-        assert_eq!(format_last_connected(2_800, 10_000), "Há 2 h");
-        assert_eq!(format_last_connected(100_000, 359_200), "Há 3 dia(s)");
     }
 }

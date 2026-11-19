@@ -18,6 +18,7 @@ use crate::dbus::proxies::{DeviceProxy, NetworkManagerProxy, WirelessDeviceProxy
 use crate::dbus::wifi::{
     NetworkDetails, SavedNetworkInfo, WifiManager, WifiNetwork, WifiSecurity,
 };
+use crate::i18n::{self, Language};
 use network_row::{NetworkRow, NetworkRowInit, NetworkRowMsg, NetworkRowOutput};
 use saved_row::{SavedRow, SavedRowInit, SavedRowMsg, SavedRowOutput};
 
@@ -70,6 +71,8 @@ impl ActivePage {
 #[derive(Debug)]
 pub enum AppMsg {
     Navigate(ActivePage),
+    #[allow(dead_code)] // Será conectado aos controles da UI na Etapa F6
+    SetLanguage(Language),
     ToggleWifi(bool),
     Scan,
     SelectNetwork(WifiNetwork),
@@ -133,6 +136,7 @@ pub struct WifiApp {
     hidden_can_submit: bool,
     stack: gtk::Stack,
     menu_popover: gtk::Popover,
+    menu_buttons: [gtk::Button; 3],
     cmd_tx: mpsc::UnboundedSender<BackendCmd>,
     connect_requested: bool,
 }
@@ -189,7 +193,8 @@ impl SimpleComponent for WifiApp {
 
                         gtk::Button {
                             set_icon_name: "list-add-symbolic",
-                            set_tooltip_text: Some("Adicionar rede oculta"),
+                            #[watch]
+                            set_tooltip_text: Some(i18n::strings(model.config.language).add_hidden_tooltip),
                             add_css_class: "wifi-action-btn",
                             #[watch]
                             set_sensitive: model.wifi_enabled,
@@ -198,7 +203,8 @@ impl SimpleComponent for WifiApp {
 
                         gtk::Button {
                             set_icon_name: "view-refresh-symbolic",
-                            set_tooltip_text: Some("Escanear redes"),
+                            #[watch]
+                            set_tooltip_text: Some(i18n::strings(model.config.language).scan_tooltip),
                             add_css_class: "wifi-scan-btn",
                             #[watch]
                             set_sensitive: model.wifi_enabled && !model.scanning,
@@ -216,7 +222,8 @@ impl SimpleComponent for WifiApp {
 
                         gtk::MenuButton {
                             set_icon_name: "view-more-symbolic",
-                            set_tooltip_text: Some("Opções"),
+                            #[watch]
+                            set_tooltip_text: Some(i18n::strings(model.config.language).options_tooltip),
                             add_css_class: "wifi-action-btn",
                             set_popover: Some(&model.menu_popover),
                         },
@@ -256,7 +263,7 @@ impl SimpleComponent for WifiApp {
                             gtk::Label {
                                 #[watch]
                                 set_label: &match &model.pending_network {
-                                    Some(net) => format!("Senha para \"{}\":", net.ssid),
+                                    Some(net) => i18n::password_prompt_for(model.config.language, &net.ssid),
                                     None => String::new(),
                                 },
                                 set_halign: gtk::Align::Start,
@@ -270,18 +277,21 @@ impl SimpleComponent for WifiApp {
                                 password_entry -> gtk::PasswordEntry {
                                     set_hexpand: true,
                                     set_show_peek_icon: true,
-                                    set_placeholder_text: Some("Digite a senha Wi-Fi..."),
+                                    #[watch]
+                                    set_placeholder_text: Some(i18n::strings(model.config.language).password_placeholder),
                                     connect_activate => AppMsg::ConnectWithPassword,
                                 },
 
                                 gtk::Button {
-                                    set_label: "Conectar",
+                                    #[watch]
+                                    set_label: i18n::strings(model.config.language).connect,
                                     add_css_class: "wifi-connect-btn",
                                     connect_clicked => AppMsg::ConnectWithPassword,
                                 },
 
                                 gtk::Button {
-                                    set_label: "Cancelar",
+                                    #[watch]
+                                    set_label: i18n::strings(model.config.language).cancel,
                                     add_css_class: "wifi-action-btn",
                                     connect_clicked => AppMsg::CancelPassword,
                                 },
@@ -302,13 +312,15 @@ impl SimpleComponent for WifiApp {
 
                         gtk::Button {
                             set_icon_name: "go-previous-symbolic",
-                            set_tooltip_text: Some("Voltar"),
+                            #[watch]
+                            set_tooltip_text: Some(i18n::strings(model.config.language).back_tooltip),
                             add_css_class: "wifi-action-btn",
                             connect_clicked => AppMsg::Navigate(ActivePage::Main),
                         },
 
                         gtk::Label {
-                            set_label: "Adicionar rede",
+                            #[watch]
+                            set_label: i18n::strings(model.config.language).add_network_title,
                             add_css_class: "wifi-title",
                         },
                     },
@@ -319,20 +331,23 @@ impl SimpleComponent for WifiApp {
                         add_css_class: "wifi-about-card",
 
                         gtk::Label {
-                            set_label: "Nome da rede (SSID)",
+                            #[watch]
+                            set_label: i18n::strings(model.config.language).ssid_label,
                             set_halign: gtk::Align::Start,
                             add_css_class: "wifi-subtitle",
                         },
 
                         #[local_ref]
                         hidden_ssid_entry -> gtk::Entry {
-                            set_placeholder_text: Some("Ex: MinhaRedeOculta"),
+                            #[watch]
+                            set_placeholder_text: Some(i18n::strings(model.config.language).ssid_placeholder),
                             connect_changed => AppMsg::HiddenFormChanged,
                             connect_activate => AppMsg::SubmitHiddenNetwork,
                         },
 
                         gtk::Label {
-                            set_label: "Segurança",
+                            #[watch]
+                            set_label: i18n::strings(model.config.language).security_label,
                             set_halign: gtk::Align::Start,
                             add_css_class: "wifi-subtitle",
                         },
@@ -343,21 +358,24 @@ impl SimpleComponent for WifiApp {
                             set_homogeneous: true,
 
                             gtk::ToggleButton {
-                                set_label: "Aberta",
+                                #[watch]
+                                set_label: i18n::strings(model.config.language).sec_open,
                                 #[watch]
                                 set_active: model.hidden_security == WifiSecurity::Open,
                                 connect_clicked => AppMsg::SetHiddenSecurity(WifiSecurity::Open),
                             },
 
                             gtk::ToggleButton {
-                                set_label: "WPA/WPA2",
+                                #[watch]
+                                set_label: i18n::strings(model.config.language).sec_wpa,
                                 #[watch]
                                 set_active: model.hidden_security == WifiSecurity::WpaPsk,
                                 connect_clicked => AppMsg::SetHiddenSecurity(WifiSecurity::WpaPsk),
                             },
 
                             gtk::ToggleButton {
-                                set_label: "WPA3",
+                                #[watch]
+                                set_label: i18n::strings(model.config.language).sec_wpa3,
                                 #[watch]
                                 set_active: model.hidden_security == WifiSecurity::Sae,
                                 connect_clicked => AppMsg::SetHiddenSecurity(WifiSecurity::Sae),
@@ -365,7 +383,8 @@ impl SimpleComponent for WifiApp {
                         },
 
                         gtk::Label {
-                            set_label: "Senha",
+                            #[watch]
+                            set_label: i18n::strings(model.config.language).password_label,
                             set_halign: gtk::Align::Start,
                             add_css_class: "wifi-subtitle",
                             #[watch]
@@ -375,7 +394,8 @@ impl SimpleComponent for WifiApp {
                         #[local_ref]
                         hidden_password_entry -> gtk::PasswordEntry {
                             set_show_peek_icon: true,
-                            set_placeholder_text: Some("Digite a senha Wi-Fi..."),
+                            #[watch]
+                            set_placeholder_text: Some(i18n::strings(model.config.language).password_placeholder),
                             #[watch]
                             set_visible: model.hidden_security != WifiSecurity::Open,
                             connect_changed => AppMsg::HiddenFormChanged,
@@ -383,7 +403,8 @@ impl SimpleComponent for WifiApp {
                         },
 
                         gtk::CheckButton {
-                            set_label: Some("Rede oculta (não transmite SSID)"),
+                            #[watch]
+                            set_label: Some(i18n::strings(model.config.language).hidden_checkbox),
                             #[watch]
                             set_active: model.hidden_is_hidden,
                             connect_toggled[sender] => move |btn| {
@@ -397,13 +418,15 @@ impl SimpleComponent for WifiApp {
                             set_halign: gtk::Align::End,
 
                             gtk::Button {
-                                set_label: "Cancelar",
+                                #[watch]
+                                set_label: i18n::strings(model.config.language).cancel,
                                 add_css_class: "wifi-action-btn",
                                 connect_clicked => AppMsg::Navigate(ActivePage::Main),
                             },
 
                             gtk::Button {
-                                set_label: "Conectar",
+                                #[watch]
+                                set_label: i18n::strings(model.config.language).connect,
                                 add_css_class: "wifi-connect-btn",
                                 #[watch]
                                 set_sensitive: model.hidden_can_submit,
@@ -425,13 +448,15 @@ impl SimpleComponent for WifiApp {
 
                         gtk::Button {
                             set_icon_name: "go-previous-symbolic",
-                            set_tooltip_text: Some("Voltar"),
+                            #[watch]
+                            set_tooltip_text: Some(i18n::strings(model.config.language).back_tooltip),
                             add_css_class: "wifi-action-btn",
                             connect_clicked => AppMsg::Navigate(ActivePage::Main),
                         },
 
                         gtk::Label {
-                            set_label: "Redes salvas",
+                            #[watch]
+                            set_label: i18n::strings(model.config.language).saved_networks_title,
                             set_hexpand: true,
                             set_halign: gtk::Align::Start,
                             add_css_class: "wifi-title",
@@ -462,19 +487,22 @@ impl SimpleComponent for WifiApp {
 
                         gtk::Button {
                             set_icon_name: "go-previous-symbolic",
-                            set_tooltip_text: Some("Voltar"),
+                            #[watch]
+                            set_tooltip_text: Some(i18n::strings(model.config.language).back_tooltip),
                             add_css_class: "wifi-action-btn",
                             connect_clicked => AppMsg::Navigate(ActivePage::Main),
                         },
 
                         gtk::Label {
-                            set_label: "Personalização",
+                            #[watch]
+                            set_label: i18n::strings(model.config.language).settings_title,
                             add_css_class: "wifi-title",
                         },
                     },
 
                     gtk::Label {
-                        set_label: "Em construção (Etapa F6).",
+                        #[watch]
+                        set_label: i18n::strings(model.config.language).settings_placeholder,
                         set_vexpand: true,
                         add_css_class: "wifi-status",
                     },
@@ -492,13 +520,15 @@ impl SimpleComponent for WifiApp {
 
                         gtk::Button {
                             set_icon_name: "go-previous-symbolic",
-                            set_tooltip_text: Some("Voltar"),
+                            #[watch]
+                            set_tooltip_text: Some(i18n::strings(model.config.language).back_tooltip),
                             add_css_class: "wifi-action-btn",
                             connect_clicked => AppMsg::Navigate(ActivePage::Main),
                         },
 
                         gtk::Label {
-                            set_label: "Sobre",
+                            #[watch]
+                            set_label: i18n::strings(model.config.language).about_title,
                             add_css_class: "wifi-title",
                         },
                     },
@@ -522,12 +552,14 @@ impl SimpleComponent for WifiApp {
                         },
 
                         gtk::Label {
-                            set_label: &format!("Versão {}", env!("CARGO_PKG_VERSION")),
+                            #[watch]
+                            set_label: &i18n::version_label(model.config.language, env!("CARGO_PKG_VERSION")),
                             add_css_class: "wifi-subtitle",
                         },
 
                         gtk::Label {
-                            set_label: env!("CARGO_PKG_DESCRIPTION"),
+                            #[watch]
+                            set_label: i18n::strings(model.config.language).about_description,
                             set_wrap: true,
                             set_justify: gtk::Justification::Center,
                             add_css_class: "wifi-status",
@@ -540,7 +572,8 @@ impl SimpleComponent for WifiApp {
 
                         gtk::LinkButton {
                             set_uri: env!("CARGO_PKG_REPOSITORY"),
-                            set_label: "Repositório no GitHub",
+                            #[watch]
+                            set_label: i18n::strings(model.config.language).about_github,
                             connect_activate_link => |_| {
                                 if let Err(e) = std::process::Command::new("xdg-open")
                                     .arg(env!("CARGO_PKG_REPOSITORY"))
@@ -566,7 +599,7 @@ impl SimpleComponent for WifiApp {
         let hidden_ssid_entry = gtk::Entry::new();
         let hidden_password_entry = gtk::PasswordEntry::new();
         let stack = gtk::Stack::new();
-        let menu_popover = build_menu_popover(&sender);
+        let (menu_popover, menu_buttons) = build_menu_popover(&sender, config.language);
 
         config::apply_css();
         setup_layer_shell(&root, &config);
@@ -602,13 +635,15 @@ impl SimpleComponent for WifiApp {
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         spawn_dbus_worker(sender.clone(), cmd_rx);
 
+        let initial_status = i18n::strings(config.language).connecting_nm.to_string();
+
         let model = Self {
             config,
             active_page: ActivePage::Main,
             interface: String::new(),
             wifi_enabled: false,
             scanning: false,
-            status_text: "Conectando ao NetworkManager...".to_string(),
+            status_text: initial_status,
             pending_network: None,
             expanded_ssid: None,
             expanded_details: None,
@@ -626,6 +661,7 @@ impl SimpleComponent for WifiApp {
             hidden_can_submit: false,
             stack: stack.clone(),
             menu_popover,
+            menu_buttons,
             cmd_tx,
             connect_requested: false,
         };
@@ -651,32 +687,49 @@ impl SimpleComponent for WifiApp {
                     let _ = self.cmd_tx.send(BackendCmd::ListSaved);
                 }
             }
+            AppMsg::SetLanguage(lang) => {
+                self.config.language = lang;
+                let s = i18n::strings(lang);
+                self.menu_buttons[0].set_label(s.menu_saved_networks);
+                self.menu_buttons[1].set_label(s.menu_settings);
+                self.menu_buttons[2].set_label(s.menu_about);
+
+                let guard = self.networks.guard();
+                for idx in 0..guard.len() {
+                    guard.send(idx, NetworkRowMsg::SetLanguage(lang));
+                }
+                let saved_guard = self.saved_networks.guard();
+                for idx in 0..saved_guard.len() {
+                    saved_guard.send(idx, SavedRowMsg::SetLanguage(lang));
+                }
+            }
             AppMsg::ToggleWifi(enabled) => {
                 if self.wifi_enabled == enabled {
                     return;
                 }
                 self.wifi_enabled = enabled;
                 self.pending_network = None;
+                let s = i18n::strings(self.config.language);
                 self.status_text = if enabled {
-                    "Ligando Wi-Fi...".to_string()
+                    s.turning_on.to_string()
                 } else {
-                    "Desligando Wi-Fi...".to_string()
+                    s.turning_off.to_string()
                 };
                 let _ = self.cmd_tx.send(BackendCmd::ToggleWifi(enabled));
             }
             AppMsg::Scan => {
                 self.scanning = true;
-                self.status_text = "Escaneando redes...".to_string();
+                self.status_text = i18n::strings(self.config.language).scanning.to_string();
                 let _ = self.cmd_tx.send(BackendCmd::Scan);
             }
             AppMsg::SelectNetwork(net) => {
                 if net.secured && !net.saved {
                     self.password_entry.set_text("");
-                    self.status_text = format!("Digite a senha para \"{}\"", net.ssid);
+                    self.status_text = i18n::enter_password_for(self.config.language, &net.ssid);
                     self.pending_network = Some(net);
                 } else {
                     self.connect_requested = true;
-                    self.status_text = format!("Conectando em \"{}\"...", net.ssid);
+                    self.status_text = i18n::connecting_to(self.config.language, &net.ssid);
                     let _ = self.cmd_tx.send(BackendCmd::Connect {
                         network: net,
                         password: None,
@@ -690,7 +743,7 @@ impl SimpleComponent for WifiApp {
                 let password = self.password_entry.text().to_string();
                 self.password_entry.set_text("");
                 self.connect_requested = true;
-                self.status_text = format!("Conectando em \"{}\"...", net.ssid);
+                self.status_text = i18n::connecting_to(self.config.language, &net.ssid);
                 let _ = self.cmd_tx.send(BackendCmd::Connect {
                     network: net,
                     password: Some(password),
@@ -699,7 +752,9 @@ impl SimpleComponent for WifiApp {
             AppMsg::CancelPassword => {
                 self.pending_network = None;
                 self.password_entry.set_text("");
-                self.status_text = "Conexão cancelada".to_string();
+                self.status_text = i18n::strings(self.config.language)
+                    .connection_cancelled
+                    .to_string();
             }
             AppMsg::SetHiddenSecurity(sec) => {
                 self.hidden_security = sec;
@@ -730,7 +785,7 @@ impl SimpleComponent for WifiApp {
                 self.connect_requested = true;
                 self.active_page = ActivePage::Main;
                 self.stack.set_visible_child_name(ActivePage::Main.stack_name());
-                self.status_text = format!("Conectando em \"{ssid}\"...");
+                self.status_text = i18n::connecting_to(self.config.language, &ssid);
 
                 let _ = self.cmd_tx.send(BackendCmd::ConnectHidden {
                     ssid,
@@ -753,11 +808,11 @@ impl SimpleComponent for WifiApp {
             }
             AppMsg::Disconnect => {
                 self.connect_requested = false;
-                self.status_text = "Desconectando...".to_string();
+                self.status_text = i18n::strings(self.config.language).disconnecting.to_string();
                 let _ = self.cmd_tx.send(BackendCmd::Disconnect);
             }
             AppMsg::Forget(ssid) => {
-                self.status_text = format!("Removendo perfil \"{ssid}\"...");
+                self.status_text = i18n::removing_profile(self.config.language, &ssid);
                 let _ = self.cmd_tx.send(BackendCmd::Forget(ssid));
             }
             AppMsg::ToggleExpandRow(net) => {
@@ -869,9 +924,14 @@ impl SimpleComponent for WifiApp {
             AppMsg::SavedNetworksLoaded(list) => {
                 let mut guard = self.saved_networks.guard();
                 guard.clear();
+                let lang = self.config.language;
                 for info in list {
                     let expanded = self.expanded_saved_ssid.as_deref() == Some(&info.ssid);
-                    guard.push_back(SavedRowInit { info, expanded });
+                    guard.push_back(SavedRowInit {
+                        info,
+                        lang,
+                        expanded,
+                    });
                 }
             }
             AppMsg::BackendState {
@@ -890,6 +950,7 @@ impl SimpleComponent for WifiApp {
 
                 let mut guard = self.networks.guard();
                 guard.clear();
+                let lang = self.config.language;
                 if wifi_enabled {
                     let min_strength = self.config.min_signal_strength;
                     for net in networks
@@ -909,16 +970,17 @@ impl SimpleComponent for WifiApp {
                         };
                         guard.push_back(NetworkRowInit {
                             network: net,
+                            lang,
                             expanded: is_expanded,
                             details,
                             password,
                             password_visible: is_expanded && self.expanded_password_visible,
                         });
                     }
-                    self.status_text = format!("{} rede(s) encontrada(s)", guard.len());
+                    self.status_text = i18n::networks_found(lang, guard.len());
                 } else {
                     self.pending_network = None;
-                    self.status_text = "Wi-Fi desligado".to_string();
+                    self.status_text = i18n::strings(lang).wifi_off.to_string();
                 }
             }
             AppMsg::BackendStatus(text) => {
@@ -1157,18 +1219,23 @@ async fn emit_snapshot(manager: &WifiManager, sender: &ComponentSender<WifiApp>)
     });
 }
 
-fn build_menu_popover(sender: &ComponentSender<WifiApp>) -> gtk::Popover {
+fn build_menu_popover(
+    sender: &ComponentSender<WifiApp>,
+    lang: Language,
+) -> (gtk::Popover, [gtk::Button; 3]) {
     let popover = gtk::Popover::new();
     popover.add_css_class("wifi-menu-popover");
 
     let vbox = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    let s = i18n::strings(lang);
 
     let items = [
-        ("Redes salvas", ActivePage::SavedNetworks),
-        ("Personalização", ActivePage::Settings),
-        ("Sobre", ActivePage::About),
+        (s.menu_saved_networks, ActivePage::SavedNetworks),
+        (s.menu_settings, ActivePage::Settings),
+        (s.menu_about, ActivePage::About),
     ];
 
+    let mut buttons = Vec::with_capacity(3);
     for (label, page) in items {
         let btn = gtk::Button::with_label(label);
         btn.set_has_frame(false);
@@ -1182,10 +1249,12 @@ fn build_menu_popover(sender: &ComponentSender<WifiApp>) -> gtk::Popover {
             sender_clone.input(AppMsg::Navigate(page));
         });
         vbox.append(&btn);
+        buttons.push(btn);
     }
 
     popover.set_child(Some(&vbox));
-    popover
+    let buttons: [gtk::Button; 3] = buttons.try_into().expect("3 botões no menu");
+    (popover, buttons)
 }
 
 fn setup_layer_shell(window: &gtk::ApplicationWindow, config: &AppConfig) {

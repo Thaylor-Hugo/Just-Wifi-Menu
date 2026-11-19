@@ -4,10 +4,12 @@ use relm4::gtk::prelude::*;
 use relm4::prelude::*;
 
 use crate::dbus::wifi::{NetworkDetails, WifiNetwork};
+use crate::i18n::{self, Language};
 
 #[derive(Debug, Clone)]
 pub struct NetworkRowInit {
     pub network: WifiNetwork,
+    pub lang: Language,
     pub expanded: bool,
     pub details: Option<NetworkDetails>,
     pub password: Option<String>,
@@ -17,6 +19,7 @@ pub struct NetworkRowInit {
 #[derive(Debug, Clone)]
 pub struct NetworkRow {
     pub network: WifiNetwork,
+    pub lang: Language,
     pub expanded: bool,
     pub details: Option<NetworkDetails>,
     pub password: Option<String>,
@@ -26,6 +29,7 @@ pub struct NetworkRow {
 #[derive(Debug)]
 pub enum NetworkRowMsg {
     ToggleExpandClicked,
+    SetLanguage(Language),
     SetExpanded {
         expanded: bool,
         details: Option<NetworkDetails>,
@@ -119,7 +123,8 @@ impl FactoryComponent for NetworkRow {
                             },
 
                             gtk::Label {
-                                set_label: &subtitle_text(&self.network),
+                                #[watch]
+                                set_label: &subtitle_text(&self.network, self.lang),
                                 set_halign: gtk::Align::Start,
                                 add_css_class: "wifi-subtitle",
                             },
@@ -133,7 +138,12 @@ impl FactoryComponent for NetworkRow {
                 },
 
                 gtk::Button {
-                    set_label: if self.network.connected { "Desconectar" } else { "Conectar" },
+                    #[watch]
+                    set_label: if self.network.connected {
+                        i18n::strings(self.lang).disconnect
+                    } else {
+                        i18n::strings(self.lang).connect
+                    },
                     add_css_class: "wifi-action-btn",
                     connect_clicked[sender, net = self.network.clone()] => move |_| {
                         let msg = if net.connected {
@@ -159,7 +169,7 @@ impl FactoryComponent for NetworkRow {
                     // Frequência e Segurança (sempre disponível)
                     gtk::Label {
                         #[watch]
-                        set_label: &details_summary(&self.network, self.details.as_ref()),
+                        set_label: &details_summary(&self.network, self.details.as_ref(), self.lang),
                         set_halign: gtk::Align::Start,
                         set_wrap: true,
                         add_css_class: "wifi-subtitle",
@@ -184,7 +194,8 @@ impl FactoryComponent for NetworkRow {
 
                         gtk::Button {
                             set_icon_name: "edit-copy-symbolic",
-                            set_tooltip_text: Some("Copiar IP"),
+                            #[watch]
+                            set_tooltip_text: Some(i18n::strings(self.lang).copy_ip_tooltip),
                             add_css_class: "wifi-action-btn",
                             connect_clicked[sender] => move |_| {
                                 sender.input(NetworkRowMsg::CopyText("ip".to_string()));
@@ -202,9 +213,9 @@ impl FactoryComponent for NetworkRow {
                         gtk::Label {
                             #[watch]
                             set_label: &match (self.password_visible, &self.password) {
-                                (true, Some(pw)) => format!("Senha: {pw}"),
-                                (true, None) => "Senha: carregando...".to_string(),
-                                (false, _) => "Senha: ••••••••".to_string(),
+                                (true, Some(pw)) => i18n::password_revealed(self.lang, pw),
+                                (true, None) => i18n::strings(self.lang).password_loading.to_string(),
+                                (false, _) => i18n::password_masked(self.lang).to_string(),
                             },
                             set_hexpand: true,
                             set_halign: gtk::Align::Start,
@@ -214,14 +225,19 @@ impl FactoryComponent for NetworkRow {
 
                         gtk::Button {
                             #[watch]
-                            set_label: if self.password_visible { "Ocultar" } else { "Ver senha" },
+                            set_label: if self.password_visible {
+                                i18n::strings(self.lang).hide_password
+                            } else {
+                                i18n::strings(self.lang).show_password
+                            },
                             add_css_class: "wifi-action-btn",
                             connect_clicked => NetworkRowMsg::TogglePasswordVisibility,
                         },
 
                         gtk::Button {
                             set_icon_name: "edit-copy-symbolic",
-                            set_tooltip_text: Some("Copiar senha"),
+                            #[watch]
+                            set_tooltip_text: Some(i18n::strings(self.lang).copy_password_tooltip),
                             add_css_class: "wifi-action-btn",
                             connect_clicked => NetworkRowMsg::CopyText("password".to_string()),
                         },
@@ -235,7 +251,8 @@ impl FactoryComponent for NetworkRow {
                         set_visible: self.network.saved,
 
                         gtk::CheckButton {
-                            set_label: Some("Auto-reconectar"),
+                            #[watch]
+                            set_label: Some(i18n::strings(self.lang).autoconnect),
                             set_hexpand: true,
                             #[watch]
                             set_active: self
@@ -250,7 +267,8 @@ impl FactoryComponent for NetworkRow {
 
                         gtk::Button {
                             set_icon_name: "user-trash-symbolic",
-                            set_label: "Esquecer",
+                            #[watch]
+                            set_label: i18n::strings(self.lang).forget,
                             add_css_class: "wifi-forget-btn",
                             connect_clicked[sender, ssid = self.network.ssid.clone()] => move |_| {
                                 let _ = sender.output(NetworkRowOutput::Forget(ssid.clone()));
@@ -265,6 +283,7 @@ impl FactoryComponent for NetworkRow {
     fn init_model(init: Self::Init, _index: &DynamicIndex, _sender: FactorySender<Self>) -> Self {
         Self {
             network: init.network,
+            lang: init.lang,
             expanded: init.expanded,
             details: init.details,
             password: init.password,
@@ -276,6 +295,9 @@ impl FactoryComponent for NetworkRow {
         match msg {
             NetworkRowMsg::ToggleExpandClicked => {
                 let _ = sender.output(NetworkRowOutput::ToggleExpand(self.network.clone()));
+            }
+            NetworkRowMsg::SetLanguage(lang) => {
+                self.lang = lang;
             }
             NetworkRowMsg::SetExpanded {
                 expanded,
@@ -324,7 +346,8 @@ impl FactoryComponent for NetworkRow {
                     && let Some(display) = gdk::Display::default()
                 {
                     display.clipboard().set_text(&val);
-                    let label = if kind == "ip" { "IP copiado" } else { "Senha copiada" };
+                    let s = i18n::strings(self.lang);
+                    let label = if kind == "ip" { s.ip_copied } else { s.password_copied };
                     let _ = sender.output(NetworkRowOutput::CopiedFeedback(label.to_string()));
                 }
             }
@@ -349,7 +372,8 @@ impl FactoryComponent for NetworkRow {
     }
 }
 
-fn details_summary(net: &WifiNetwork, details: Option<&NetworkDetails>) -> String {
+fn details_summary(net: &WifiNetwork, details: Option<&NetworkDetails>, lang: Language) -> String {
+    let s = i18n::strings(lang);
     let band = if net.frequency >= 5925 {
         "6 GHz"
     } else if net.frequency >= 4900 {
@@ -359,8 +383,8 @@ fn details_summary(net: &WifiNetwork, details: Option<&NetworkDetails>) -> Strin
     };
     let sec = details
         .map(|d| d.security_label.as_str())
-        .unwrap_or(if net.secured { "Protegida" } else { "Aberta" });
-    format!("Frequência: {band} ({} MHz) • Segurança: {sec}", net.frequency)
+        .unwrap_or(if net.secured { s.secured } else { s.open });
+    format!("{}: {band} ({} MHz) • {}: {sec}", s.frequency_label, net.frequency, s.security_label)
 }
 
 fn ip_summary(details: Option<&NetworkDetails>) -> String {
@@ -374,7 +398,8 @@ fn ip_summary(details: Option<&NetworkDetails>) -> String {
     }
 }
 
-fn subtitle_text(net: &WifiNetwork) -> String {
+fn subtitle_text(net: &WifiNetwork, lang: Language) -> String {
+    let s = i18n::strings(lang);
     let band = if net.frequency >= 5925 {
         "6 GHz"
     } else if net.frequency >= 4900 {
@@ -384,13 +409,13 @@ fn subtitle_text(net: &WifiNetwork) -> String {
     };
 
     let state = if net.connected {
-        "Conectado"
+        s.connected
     } else if net.saved {
-        "Salvo"
+        s.saved
     } else if net.secured {
-        "Protegida"
+        s.secured
     } else {
-        "Aberta"
+        s.open
     };
 
     format!("{state} • {band}")

@@ -4,23 +4,27 @@ use relm4::gtk;
 use relm4::gtk::prelude::*;
 use relm4::prelude::*;
 
-use crate::dbus::wifi::{SavedNetworkInfo, format_last_connected};
+use crate::dbus::wifi::SavedNetworkInfo;
+use crate::i18n::{self, Language};
 
 #[derive(Debug, Clone)]
 pub struct SavedRowInit {
     pub info: SavedNetworkInfo,
+    pub lang: Language,
     pub expanded: bool,
 }
 
 #[derive(Debug, Clone)]
 pub struct SavedRow {
     pub info: SavedNetworkInfo,
+    pub lang: Language,
     pub expanded: bool,
 }
 
 #[derive(Debug)]
 pub enum SavedRowMsg {
     ToggleExpandClicked,
+    SetLanguage(Language),
     SetExpanded(bool),
     ToggleAutoconnect(bool),
 }
@@ -103,11 +107,8 @@ impl FactoryComponent for SavedRow {
                     add_css_class: "wifi-details-box",
 
                     gtk::Label {
-                        set_label: &format!(
-                            "Última conexão: {} • Rede oculta: {}",
-                            format_last_connected(self.info.timestamp, now_unix_secs()),
-                            if self.info.hidden { "Sim" } else { "Não" }
-                        ),
+                        #[watch]
+                        set_label: &saved_meta_text(&self.info, self.lang),
                         set_halign: gtk::Align::Start,
                         set_wrap: true,
                         add_css_class: "wifi-subtitle",
@@ -118,7 +119,8 @@ impl FactoryComponent for SavedRow {
                         set_spacing: 8,
 
                         gtk::CheckButton {
-                            set_label: Some("Auto-reconectar"),
+                            #[watch]
+                            set_label: Some(i18n::strings(self.lang).autoconnect),
                             set_hexpand: true,
                             #[watch]
                             set_active: self.info.autoconnect,
@@ -129,7 +131,8 @@ impl FactoryComponent for SavedRow {
 
                         gtk::Button {
                             set_icon_name: "user-trash-symbolic",
-                            set_label: "Esquecer",
+                            #[watch]
+                            set_label: i18n::strings(self.lang).forget,
                             add_css_class: "wifi-forget-btn",
                             connect_clicked[sender, ssid = self.info.ssid.clone()] => move |_| {
                                 let _ = sender.output(SavedRowOutput::Forget(ssid.clone()));
@@ -144,6 +147,7 @@ impl FactoryComponent for SavedRow {
     fn init_model(init: Self::Init, _index: &DynamicIndex, _sender: FactorySender<Self>) -> Self {
         Self {
             info: init.info,
+            lang: init.lang,
             expanded: init.expanded,
         }
     }
@@ -152,6 +156,9 @@ impl FactoryComponent for SavedRow {
         match msg {
             SavedRowMsg::ToggleExpandClicked => {
                 let _ = sender.output(SavedRowOutput::ToggleExpand(self.info.ssid.clone()));
+            }
+            SavedRowMsg::SetLanguage(lang) => {
+                self.lang = lang;
             }
             SavedRowMsg::SetExpanded(expanded) => {
                 self.expanded = expanded;
@@ -168,6 +175,17 @@ impl FactoryComponent for SavedRow {
             }
         }
     }
+}
+
+fn saved_meta_text(info: &SavedNetworkInfo, lang: Language) -> String {
+    let s = i18n::strings(lang);
+    format!(
+        "{}: {} • {}: {}",
+        s.last_connected_label,
+        i18n::format_last_connected_i18n(lang, info.timestamp, now_unix_secs()),
+        s.hidden_label,
+        if info.hidden { s.yes } else { s.no }
+    )
 }
 
 fn now_unix_secs() -> u64 {

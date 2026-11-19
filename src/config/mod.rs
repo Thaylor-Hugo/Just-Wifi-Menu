@@ -5,11 +5,14 @@ use relm4::gtk;
 use relm4::gtk::gdk;
 use serde::{Deserialize, Serialize};
 
+use crate::i18n::Language;
+
 pub const DEFAULT_CSS: &str = include_str!("default_style.css");
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppConfig {
+    pub language: Language,
     pub window_width: i32,
     pub window_height: i32,
     pub close_on_connect: bool,
@@ -25,6 +28,7 @@ pub struct AppConfig {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
+            language: Language::Pt,
             window_width: 400,
             window_height: 500,
             close_on_connect: false,
@@ -119,6 +123,7 @@ mod tests {
     fn partial_toml_uses_defaults_for_missing_fields() {
         let parsed: AppConfig = toml::from_str(
             r#"
+            language = "en"
             window_width = 450
             close_on_connect = true
             anchor = "bottom-right"
@@ -126,6 +131,7 @@ mod tests {
         )
         .expect("TOML parcial deve desserializar");
 
+        assert_eq!(parsed.language, Language::En);
         assert_eq!(parsed.window_width, 450);
         assert_eq!(parsed.window_height, 500);
         assert!(parsed.close_on_connect);

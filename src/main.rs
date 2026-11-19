@@ -1,5 +1,6 @@
 mod config;
 mod dbus;
+mod i18n;
 mod ui;
 
 use clap::{Args, Parser, Subcommand};
