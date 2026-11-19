@@ -2,12 +2,14 @@ mod network_row;
 mod saved_row;
 
 use std::cell::Cell;
+use std::rc::Rc;
 
 use futures::StreamExt;
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 use relm4::factory::FactoryVecDeque;
 use relm4::gtk;
 use relm4::gtk::gdk;
+use relm4::gtk::gio;
 use relm4::gtk::prelude::*;
 use relm4::prelude::*;
 use tokio::sync::mpsc;
@@ -68,11 +70,45 @@ impl ActivePage {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThemePreset {
+    Catppuccin,
+    TokyoNight,
+    Nord,
+    Gruvbox,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorTarget {
+    Primary,
+    Secondary,
+}
+
 #[derive(Debug)]
 pub enum AppMsg {
     Navigate(ActivePage),
-    #[allow(dead_code)] // Será conectado aos controles da UI na Etapa F6
     SetLanguage(Language),
+    ApplyThemePreset(ThemePreset),
+    SetPrimaryColor,
+    SetSecondaryColor,
+    ToggleColorPicker(ColorTarget),
+    ColorPickerChanged,
+    SetBorderRadius(i32),
+    SetSpacing(i32),
+    SetRowPadding(i32),
+    SetAnchor(String),
+    SetMarginTop(i32),
+    SetMarginRight(i32),
+    SetMarginBottom(i32),
+    SetMarginLeft(i32),
+    SetCloseOnConnect(bool),
+    SetCloseOnFocusLoss(bool),
+    SetMinSignal(u8),
+    OpenConfigFile,
+    OpenStyleFile,
+    LaunchWithApp(usize),
+    CloseAppChooser,
+    ReloadCss,
     ToggleWifi(bool),
     Scan,
     SelectNetwork(WifiNetwork),
@@ -113,7 +149,9 @@ pub enum AppMsg {
 }
 
 pub struct WifiApp {
+    window: gtk::ApplicationWindow,
     config: AppConfig,
+    close_on_focus_loss_flag: Rc<Cell<bool>>,
     active_page: ActivePage,
     interface: String,
     wifi_enabled: bool,
@@ -131,6 +169,14 @@ pub struct WifiApp {
     password_entry: gtk::PasswordEntry,
     hidden_ssid_entry: gtk::Entry,
     hidden_password_entry: gtk::PasswordEntry,
+    primary_color_entry: gtk::Entry,
+    secondary_color_entry: gtk::Entry,
+    #[allow(deprecated)]
+    color_chooser: gtk::ColorChooserWidget,
+    active_color_target: Option<ColorTarget>,
+    app_chooser_list: gtk::ListBox,
+    app_chooser_apps: Vec<gio::AppInfo>,
+    app_chooser_path: Option<std::path::PathBuf>,
     hidden_security: WifiSecurity,
     hidden_is_hidden: bool,
     hidden_can_submit: bool,
@@ -141,6 +187,7 @@ pub struct WifiApp {
     connect_requested: bool,
 }
 
+#[allow(deprecated)]
 #[relm4::component(pub)]
 impl SimpleComponent for WifiApp {
     type Init = AppConfig;
@@ -162,7 +209,8 @@ impl SimpleComponent for WifiApp {
                 // Página principal: lista de redes Wi-Fi
                 add_named[Some("main")] = &gtk::Box {
                     set_orientation: gtk::Orientation::Vertical,
-                    set_spacing: 10,
+                    #[watch]
+                    set_spacing: model.config.spacing,
                     set_margin_all: 12,
                     add_css_class: "wifi-menu-container",
 
@@ -475,7 +523,7 @@ impl SimpleComponent for WifiApp {
                     },
                 },
 
-                // Página: Personalização (placeholder para Etapa F6)
+                // Página: Personalização
                 add_named[Some("settings")] = &gtk::Box {
                     set_orientation: gtk::Orientation::Vertical,
                     set_spacing: 12,
@@ -500,11 +548,493 @@ impl SimpleComponent for WifiApp {
                         },
                     },
 
-                    gtk::Label {
-                        #[watch]
-                        set_label: i18n::strings(model.config.language).settings_placeholder,
+                    gtk::ScrolledWindow {
                         set_vexpand: true,
-                        add_css_class: "wifi-status",
+                        set_policy: (gtk::PolicyType::Never, gtk::PolicyType::Automatic),
+
+                        gtk::Box {
+                            set_orientation: gtk::Orientation::Vertical,
+                            set_spacing: 10,
+
+                            // Card 1: Arquivos de configuração
+                            gtk::Box {
+                                set_orientation: gtk::Orientation::Vertical,
+                                set_spacing: 8,
+                                add_css_class: "wifi-about-card",
+
+                                gtk::Label {
+                                    #[watch]
+                                    set_label: i18n::strings(model.config.language).files_section,
+                                    set_halign: gtk::Align::Start,
+                                    add_css_class: "wifi-ssid",
+                                },
+
+                                gtk::Label {
+                                    set_label: &config_dir_display(),
+                                    set_halign: gtk::Align::Start,
+                                    set_ellipsize: gtk::pango::EllipsizeMode::Middle,
+                                    add_css_class: "wifi-subtitle",
+                                },
+
+                                gtk::Box {
+                                    set_orientation: gtk::Orientation::Horizontal,
+                                    set_spacing: 6,
+                                    set_homogeneous: true,
+
+                                    gtk::Button {
+                                        #[watch]
+                                        set_label: i18n::strings(model.config.language).open_config,
+                                        add_css_class: "wifi-action-btn",
+                                        connect_clicked => AppMsg::OpenConfigFile,
+                                    },
+
+                                    gtk::Button {
+                                        #[watch]
+                                        set_label: i18n::strings(model.config.language).open_style,
+                                        add_css_class: "wifi-action-btn",
+                                        connect_clicked => AppMsg::OpenStyleFile,
+                                    },
+                                },
+
+                                gtk::Button {
+                                    #[watch]
+                                    set_label: i18n::strings(model.config.language).reload_css,
+                                    add_css_class: "wifi-action-btn",
+                                    connect_clicked => AppMsg::ReloadCss,
+                                },
+
+                                // Seletor inline de aplicativo compatível (sem diálogo externo)
+                                gtk::Revealer {
+                                    #[watch]
+                                    set_reveal_child: model.app_chooser_path.is_some(),
+
+                                    gtk::Box {
+                                        set_orientation: gtk::Orientation::Vertical,
+                                        set_spacing: 6,
+                                        add_css_class: "wifi-details-box",
+
+                                        gtk::Box {
+                                            set_orientation: gtk::Orientation::Horizontal,
+                                            set_spacing: 6,
+
+                                            gtk::Label {
+                                                #[watch]
+                                                set_label: &match &model.app_chooser_path {
+                                                    Some(p) => p
+                                                        .file_name()
+                                                        .and_then(|n| n.to_str())
+                                                        .unwrap_or("Arquivo")
+                                                        .to_string(),
+                                                    None => String::new(),
+                                                },
+                                                set_hexpand: true,
+                                                set_halign: gtk::Align::Start,
+                                                add_css_class: "wifi-subtitle",
+                                            },
+
+                                            gtk::Button {
+                                                set_icon_name: "window-close-symbolic",
+                                                set_has_frame: false,
+                                                connect_clicked => AppMsg::CloseAppChooser,
+                                            },
+                                        },
+
+                                        #[local_ref]
+                                        app_chooser_list -> gtk::ListBox {
+                                            set_selection_mode: gtk::SelectionMode::None,
+                                            add_css_class: "wifi-list",
+                                        },
+                                    },
+                                },
+                            },
+
+                            // Card 2: Aparência e posição
+                            gtk::Box {
+                                set_orientation: gtk::Orientation::Vertical,
+                                set_spacing: 8,
+                                add_css_class: "wifi-about-card",
+
+                                gtk::Label {
+                                    #[watch]
+                                    set_label: i18n::strings(model.config.language).appearance_section,
+                                    set_halign: gtk::Align::Start,
+                                    add_css_class: "wifi-ssid",
+                                },
+
+                                gtk::Box {
+                                    set_orientation: gtk::Orientation::Horizontal,
+                                    set_spacing: 8,
+
+                                    gtk::Label {
+                                        #[watch]
+                                        set_label: i18n::strings(model.config.language).language_label,
+                                        set_hexpand: true,
+                                        set_halign: gtk::Align::Start,
+                                        add_css_class: "wifi-subtitle",
+                                    },
+
+                                    gtk::ToggleButton {
+                                        set_label: "PT",
+                                        #[watch]
+                                        set_active: model.config.language == Language::Pt,
+                                        connect_clicked => AppMsg::SetLanguage(Language::Pt),
+                                    },
+
+                                    gtk::ToggleButton {
+                                        set_label: "EN",
+                                        #[watch]
+                                        set_active: model.config.language == Language::En,
+                                        connect_clicked => AppMsg::SetLanguage(Language::En),
+                                    },
+                                },
+
+                                gtk::Label {
+                                    #[watch]
+                                    set_label: i18n::strings(model.config.language).theme_presets_label,
+                                    set_halign: gtk::Align::Start,
+                                    add_css_class: "wifi-subtitle",
+                                },
+
+                                gtk::Box {
+                                    set_orientation: gtk::Orientation::Horizontal,
+                                    set_spacing: 4,
+                                    set_homogeneous: true,
+
+                                    gtk::Button {
+                                        set_label: "Catppuccin",
+                                        add_css_class: "wifi-action-btn",
+                                        connect_clicked => AppMsg::ApplyThemePreset(ThemePreset::Catppuccin),
+                                    },
+                                    gtk::Button {
+                                        set_label: "Tokyo",
+                                        add_css_class: "wifi-action-btn",
+                                        connect_clicked => AppMsg::ApplyThemePreset(ThemePreset::TokyoNight),
+                                    },
+                                    gtk::Button {
+                                        set_label: "Nord",
+                                        add_css_class: "wifi-action-btn",
+                                        connect_clicked => AppMsg::ApplyThemePreset(ThemePreset::Nord),
+                                    },
+                                    gtk::Button {
+                                        set_label: "Gruvbox",
+                                        add_css_class: "wifi-action-btn",
+                                        connect_clicked => AppMsg::ApplyThemePreset(ThemePreset::Gruvbox),
+                                    },
+                                },
+
+                                gtk::Box {
+                                    set_orientation: gtk::Orientation::Horizontal,
+                                    set_spacing: 8,
+
+                                    gtk::Label {
+                                        #[watch]
+                                        set_label: i18n::strings(model.config.language).primary_color_label,
+                                        set_hexpand: true,
+                                        set_halign: gtk::Align::Start,
+                                        add_css_class: "wifi-subtitle",
+                                    },
+
+                                    gtk::ToggleButton {
+                                        set_icon_name: "color-select-symbolic",
+                                        #[watch]
+                                        set_active: model.active_color_target == Some(ColorTarget::Primary),
+                                        connect_clicked => AppMsg::ToggleColorPicker(ColorTarget::Primary),
+                                    },
+
+                                    #[local_ref]
+                                    primary_color_entry -> gtk::Entry {
+                                        set_width_chars: 9,
+                                        connect_changed => AppMsg::SetPrimaryColor,
+                                    },
+                                },
+
+                                gtk::Box {
+                                    set_orientation: gtk::Orientation::Horizontal,
+                                    set_spacing: 8,
+
+                                    gtk::Label {
+                                        #[watch]
+                                        set_label: i18n::strings(model.config.language).secondary_color_label,
+                                        set_hexpand: true,
+                                        set_halign: gtk::Align::Start,
+                                        add_css_class: "wifi-subtitle",
+                                    },
+
+                                    gtk::ToggleButton {
+                                        set_icon_name: "color-select-symbolic",
+                                        #[watch]
+                                        set_active: model.active_color_target == Some(ColorTarget::Secondary),
+                                        connect_clicked => AppMsg::ToggleColorPicker(ColorTarget::Secondary),
+                                    },
+
+                                    #[local_ref]
+                                    secondary_color_entry -> gtk::Entry {
+                                        set_width_chars: 9,
+                                        connect_changed => AppMsg::SetSecondaryColor,
+                                    },
+                                },
+
+                                // Color picker inline (não abre janela separada no Hyprland)
+                                gtk::Revealer {
+                                    #[watch]
+                                    set_reveal_child: model.active_color_target.is_some(),
+
+                                    gtk::Box {
+                                        set_orientation: gtk::Orientation::Vertical,
+                                        set_spacing: 4,
+                                        add_css_class: "wifi-details-box",
+
+                                        #[local_ref]
+                                        color_chooser -> gtk::ColorChooserWidget {
+                                            set_use_alpha: false,
+                                        },
+                                    },
+                                },
+
+                                gtk::Box {
+                                    set_orientation: gtk::Orientation::Horizontal,
+                                    set_spacing: 8,
+
+                                    gtk::Label {
+                                        #[watch]
+                                        set_label: i18n::strings(model.config.language).border_radius_label,
+                                        set_hexpand: true,
+                                        set_halign: gtk::Align::Start,
+                                        add_css_class: "wifi-subtitle",
+                                    },
+
+                                    gtk::SpinButton::with_range(0.0, 24.0, 2.0) {
+                                        set_value: model.config.border_radius as f64,
+                                        connect_value_changed[sender] => move |spin| {
+                                            sender.input(AppMsg::SetBorderRadius(spin.value_as_int()));
+                                        },
+                                    },
+                                },
+
+                                gtk::Box {
+                                    set_orientation: gtk::Orientation::Horizontal,
+                                    set_spacing: 8,
+
+                                    gtk::Label {
+                                        #[watch]
+                                        set_label: i18n::strings(model.config.language).spacing_label,
+                                        set_hexpand: true,
+                                        set_halign: gtk::Align::Start,
+                                        add_css_class: "wifi-subtitle",
+                                    },
+
+                                    gtk::SpinButton::with_range(2.0, 24.0, 2.0) {
+                                        set_value: model.config.spacing as f64,
+                                        connect_value_changed[sender] => move |spin| {
+                                            sender.input(AppMsg::SetSpacing(spin.value_as_int()));
+                                        },
+                                    },
+                                },
+
+                                gtk::Box {
+                                    set_orientation: gtk::Orientation::Horizontal,
+                                    set_spacing: 8,
+
+                                    gtk::Label {
+                                        #[watch]
+                                        set_label: i18n::strings(model.config.language).row_padding_label,
+                                        set_hexpand: true,
+                                        set_halign: gtk::Align::Start,
+                                        add_css_class: "wifi-subtitle",
+                                    },
+
+                                    gtk::SpinButton::with_range(2.0, 20.0, 2.0) {
+                                        set_value: model.config.row_padding as f64,
+                                        connect_value_changed[sender] => move |spin| {
+                                            sender.input(AppMsg::SetRowPadding(spin.value_as_int()));
+                                        },
+                                    },
+                                },
+
+                                gtk::Label {
+                                    #[watch]
+                                    set_label: i18n::strings(model.config.language).position_label,
+                                    set_halign: gtk::Align::Start,
+                                    add_css_class: "wifi-subtitle",
+                                },
+
+                                gtk::Box {
+                                    set_orientation: gtk::Orientation::Horizontal,
+                                    set_spacing: 4,
+                                    set_homogeneous: true,
+
+                                    gtk::ToggleButton {
+                                        set_label: "↖",
+                                        set_tooltip_text: Some("top-left"),
+                                        #[watch]
+                                        set_active: model.config.anchor == "top-left",
+                                        connect_clicked => AppMsg::SetAnchor("top-left".to_string()),
+                                    },
+                                    gtk::ToggleButton {
+                                        set_label: "↗",
+                                        set_tooltip_text: Some("top-right"),
+                                        #[watch]
+                                        set_active: model.config.anchor == "top-right",
+                                        connect_clicked => AppMsg::SetAnchor("top-right".to_string()),
+                                    },
+                                    gtk::ToggleButton {
+                                        set_label: "•",
+                                        set_tooltip_text: Some("center"),
+                                        #[watch]
+                                        set_active: model.config.anchor == "center",
+                                        connect_clicked => AppMsg::SetAnchor("center".to_string()),
+                                    },
+                                    gtk::ToggleButton {
+                                        set_label: "↙",
+                                        set_tooltip_text: Some("bottom-left"),
+                                        #[watch]
+                                        set_active: model.config.anchor == "bottom-left",
+                                        connect_clicked => AppMsg::SetAnchor("bottom-left".to_string()),
+                                    },
+                                    gtk::ToggleButton {
+                                        set_label: "↘",
+                                        set_tooltip_text: Some("bottom-right"),
+                                        #[watch]
+                                        set_active: model.config.anchor == "bottom-right",
+                                        connect_clicked => AppMsg::SetAnchor("bottom-right".to_string()),
+                                    },
+                                },
+
+                                gtk::Box {
+                                    set_orientation: gtk::Orientation::Horizontal,
+                                    set_spacing: 8,
+
+                                    gtk::Label {
+                                        #[watch]
+                                        set_label: i18n::strings(model.config.language).margin_top_label,
+                                        set_hexpand: true,
+                                        set_halign: gtk::Align::Start,
+                                        add_css_class: "wifi-subtitle",
+                                    },
+
+                                    gtk::SpinButton::with_range(0.0, 120.0, 2.0) {
+                                        set_value: model.config.margin_top as f64,
+                                        connect_value_changed[sender] => move |spin| {
+                                            sender.input(AppMsg::SetMarginTop(spin.value_as_int()));
+                                        },
+                                    },
+                                },
+
+                                gtk::Box {
+                                    set_orientation: gtk::Orientation::Horizontal,
+                                    set_spacing: 8,
+
+                                    gtk::Label {
+                                        #[watch]
+                                        set_label: i18n::strings(model.config.language).margin_right_label,
+                                        set_hexpand: true,
+                                        set_halign: gtk::Align::Start,
+                                        add_css_class: "wifi-subtitle",
+                                    },
+
+                                    gtk::SpinButton::with_range(0.0, 120.0, 2.0) {
+                                        set_value: model.config.margin_right as f64,
+                                        connect_value_changed[sender] => move |spin| {
+                                            sender.input(AppMsg::SetMarginRight(spin.value_as_int()));
+                                        },
+                                    },
+                                },
+
+                                gtk::Box {
+                                    set_orientation: gtk::Orientation::Horizontal,
+                                    set_spacing: 8,
+
+                                    gtk::Label {
+                                        #[watch]
+                                        set_label: i18n::strings(model.config.language).margin_bottom_label,
+                                        set_hexpand: true,
+                                        set_halign: gtk::Align::Start,
+                                        add_css_class: "wifi-subtitle",
+                                    },
+
+                                    gtk::SpinButton::with_range(0.0, 120.0, 2.0) {
+                                        set_value: model.config.margin_bottom as f64,
+                                        connect_value_changed[sender] => move |spin| {
+                                            sender.input(AppMsg::SetMarginBottom(spin.value_as_int()));
+                                        },
+                                    },
+                                },
+
+                                gtk::Box {
+                                    set_orientation: gtk::Orientation::Horizontal,
+                                    set_spacing: 8,
+
+                                    gtk::Label {
+                                        #[watch]
+                                        set_label: i18n::strings(model.config.language).margin_left_label,
+                                        set_hexpand: true,
+                                        set_halign: gtk::Align::Start,
+                                        add_css_class: "wifi-subtitle",
+                                    },
+
+                                    gtk::SpinButton::with_range(0.0, 120.0, 2.0) {
+                                        set_value: model.config.margin_left as f64,
+                                        connect_value_changed[sender] => move |spin| {
+                                            sender.input(AppMsg::SetMarginLeft(spin.value_as_int()));
+                                        },
+                                    },
+                                },
+                            },
+
+                            // Card 3: Comportamento
+                            gtk::Box {
+                                set_orientation: gtk::Orientation::Vertical,
+                                set_spacing: 8,
+                                add_css_class: "wifi-about-card",
+
+                                gtk::Label {
+                                    #[watch]
+                                    set_label: i18n::strings(model.config.language).behavior_section,
+                                    set_halign: gtk::Align::Start,
+                                    add_css_class: "wifi-ssid",
+                                },
+
+                                gtk::CheckButton {
+                                    #[watch]
+                                    set_label: Some(i18n::strings(model.config.language).close_on_connect_label),
+                                    #[watch]
+                                    set_active: model.config.close_on_connect,
+                                    connect_toggled[sender] => move |btn| {
+                                        sender.input(AppMsg::SetCloseOnConnect(btn.is_active()));
+                                    },
+                                },
+
+                                gtk::CheckButton {
+                                    #[watch]
+                                    set_label: Some(i18n::strings(model.config.language).close_on_focus_loss_label),
+                                    #[watch]
+                                    set_active: model.config.close_on_focus_loss,
+                                    connect_toggled[sender] => move |btn| {
+                                        sender.input(AppMsg::SetCloseOnFocusLoss(btn.is_active()));
+                                    },
+                                },
+
+                                gtk::Box {
+                                    set_orientation: gtk::Orientation::Horizontal,
+                                    set_spacing: 8,
+
+                                    gtk::Label {
+                                        #[watch]
+                                        set_label: i18n::strings(model.config.language).min_signal_label,
+                                        set_hexpand: true,
+                                        set_halign: gtk::Align::Start,
+                                        add_css_class: "wifi-subtitle",
+                                    },
+
+                                    gtk::SpinButton::with_range(0.0, 90.0, 5.0) {
+                                        set_value: model.config.min_signal_strength as f64,
+                                        connect_value_changed[sender] => move |spin| {
+                                            sender.input(AppMsg::SetMinSignal(spin.value_as_int().clamp(0, 100) as u8));
+                                        },
+                                    },
+                                },
+                            },
+                        },
                     },
                 },
 
@@ -598,12 +1128,31 @@ impl SimpleComponent for WifiApp {
         let password_entry = gtk::PasswordEntry::new();
         let hidden_ssid_entry = gtk::Entry::new();
         let hidden_password_entry = gtk::PasswordEntry::new();
+        let primary_color_entry = gtk::Entry::new();
+        primary_color_entry.set_text(&config.primary_color);
+        let secondary_color_entry = gtk::Entry::new();
+        secondary_color_entry.set_text(&config.secondary_color);
+
+        #[allow(deprecated)]
+        let color_chooser = gtk::ColorChooserWidget::new();
+        {
+            let sender_clone = sender.clone();
+            #[allow(deprecated)]
+            color_chooser.connect_rgba_notify(move |_| {
+                sender_clone.input(AppMsg::ColorPickerChanged);
+            });
+        }
+
+        let app_chooser_list = gtk::ListBox::new();
+
         let stack = gtk::Stack::new();
         let (menu_popover, menu_buttons) = build_menu_popover(&sender, config.language);
 
-        config::apply_css();
+        let close_on_focus_loss_flag = Rc::new(Cell::new(config.close_on_focus_loss));
+
+        config::apply_css(&config);
         setup_layer_shell(&root, &config);
-        setup_close_handlers(&root, &menu_popover, &config, &sender);
+        setup_close_handlers(&root, &menu_popover, &close_on_focus_loss_flag, &sender);
 
         let networks = FactoryVecDeque::builder()
             .launch(gtk::ListBox::default())
@@ -638,7 +1187,9 @@ impl SimpleComponent for WifiApp {
         let initial_status = i18n::strings(config.language).connecting_nm.to_string();
 
         let model = Self {
+            window: root.clone(),
             config,
+            close_on_focus_loss_flag,
             active_page: ActivePage::Main,
             interface: String::new(),
             wifi_enabled: false,
@@ -656,6 +1207,13 @@ impl SimpleComponent for WifiApp {
             password_entry: password_entry.clone(),
             hidden_ssid_entry: hidden_ssid_entry.clone(),
             hidden_password_entry: hidden_password_entry.clone(),
+            primary_color_entry: primary_color_entry.clone(),
+            secondary_color_entry: secondary_color_entry.clone(),
+            color_chooser: color_chooser.clone(),
+            active_color_target: None,
+            app_chooser_list: app_chooser_list.clone(),
+            app_chooser_apps: Vec::new(),
+            app_chooser_path: None,
             hidden_security: WifiSecurity::WpaPsk,
             hidden_is_hidden: true,
             hidden_can_submit: false,
@@ -672,12 +1230,16 @@ impl SimpleComponent for WifiApp {
         let password_entry = &model.password_entry;
         let hidden_ssid_entry = &model.hidden_ssid_entry;
         let hidden_password_entry = &model.hidden_password_entry;
+        let primary_color_entry = &model.primary_color_entry;
+        let secondary_color_entry = &model.secondary_color_entry;
+        let color_chooser = &model.color_chooser;
+        let app_chooser_list = &model.app_chooser_list;
         let widgets = view_output!();
 
         ComponentParts { model, widgets }
     }
 
-    fn update(&mut self, msg: Self::Input, _sender: ComponentSender<Self>) {
+    fn update(&mut self, msg: Self::Input, sender: ComponentSender<Self>) {
         match msg {
             AppMsg::Navigate(page) => {
                 self.menu_popover.popdown();
@@ -688,7 +1250,11 @@ impl SimpleComponent for WifiApp {
                 }
             }
             AppMsg::SetLanguage(lang) => {
+                if self.config.language == lang {
+                    return;
+                }
                 self.config.language = lang;
+                self.config.save();
                 let s = i18n::strings(lang);
                 self.menu_buttons[0].set_label(s.menu_saved_networks);
                 self.menu_buttons[1].set_label(s.menu_settings);
@@ -702,6 +1268,217 @@ impl SimpleComponent for WifiApp {
                 for idx in 0..saved_guard.len() {
                     saved_guard.send(idx, SavedRowMsg::SetLanguage(lang));
                 }
+            }
+            AppMsg::SetAnchor(anchor) => {
+                if self.config.anchor == anchor {
+                    return;
+                }
+                self.config.anchor = anchor;
+                self.config.save();
+                apply_layer_shell_position(&self.window, &self.config);
+            }
+            AppMsg::SetMarginTop(val) => {
+                if self.config.margin_top == val {
+                    return;
+                }
+                self.config.margin_top = val;
+                self.config.save();
+                apply_layer_shell_position(&self.window, &self.config);
+            }
+            AppMsg::SetMarginRight(val) => {
+                if self.config.margin_right == val {
+                    return;
+                }
+                self.config.margin_right = val;
+                self.config.save();
+                apply_layer_shell_position(&self.window, &self.config);
+            }
+            AppMsg::ApplyThemePreset(preset) => {
+                let (primary, secondary, bg, text) = match preset {
+                    ThemePreset::Catppuccin => ("#89b4fa", "#313244", "#181825", "#cdd6f4"),
+                    ThemePreset::TokyoNight => ("#7aa2f7", "#24283b", "#1a1b26", "#c0caf5"),
+                    ThemePreset::Nord => ("#88c0d0", "#3b4252", "#2e3440", "#eceff4"),
+                    ThemePreset::Gruvbox => ("#fabd2f", "#3c3836", "#282828", "#ebdbb2"),
+                };
+                self.config.primary_color = primary.to_string();
+                self.config.secondary_color = secondary.to_string();
+                self.config.bg_color = bg.to_string();
+                self.config.text_color = text.to_string();
+                self.primary_color_entry.set_text(primary);
+                self.secondary_color_entry.set_text(secondary);
+                if let Some(target) = self.active_color_target {
+                    let hex = match target {
+                        ColorTarget::Primary => primary,
+                        ColorTarget::Secondary => secondary,
+                    };
+                    if let Ok(rgba) = gdk::RGBA::parse(hex) {
+                        #[allow(deprecated)]
+                        self.color_chooser.set_rgba(&rgba);
+                    }
+                }
+                self.config.save();
+                config::apply_css(&self.config);
+            }
+            AppMsg::SetPrimaryColor => {
+                let color = self.primary_color_entry.text().trim().to_string();
+                if self.config.primary_color == color {
+                    return;
+                }
+                self.config.primary_color = color.clone();
+                if self.active_color_target == Some(ColorTarget::Primary)
+                    && let Ok(rgba) = gdk::RGBA::parse(&color)
+                {
+                    #[allow(deprecated)]
+                    self.color_chooser.set_rgba(&rgba);
+                }
+                self.config.save();
+                config::apply_css(&self.config);
+            }
+            AppMsg::SetSecondaryColor => {
+                let color = self.secondary_color_entry.text().trim().to_string();
+                if self.config.secondary_color == color {
+                    return;
+                }
+                self.config.secondary_color = color.clone();
+                if self.active_color_target == Some(ColorTarget::Secondary)
+                    && let Ok(rgba) = gdk::RGBA::parse(&color)
+                {
+                    #[allow(deprecated)]
+                    self.color_chooser.set_rgba(&rgba);
+                }
+                self.config.save();
+                config::apply_css(&self.config);
+            }
+            AppMsg::ToggleColorPicker(target) => {
+                if self.active_color_target == Some(target) {
+                    self.active_color_target = None;
+                    return;
+                }
+                self.active_color_target = Some(target);
+                let current = match target {
+                    ColorTarget::Primary => &self.config.primary_color,
+                    ColorTarget::Secondary => &self.config.secondary_color,
+                };
+                if let Ok(rgba) = gdk::RGBA::parse(current) {
+                    #[allow(deprecated)]
+                    self.color_chooser.set_rgba(&rgba);
+                }
+            }
+            AppMsg::ColorPickerChanged => {
+                let Some(target) = self.active_color_target else {
+                    return;
+                };
+                #[allow(deprecated)]
+                let hex = rgba_to_hex(&self.color_chooser.rgba());
+                match target {
+                    ColorTarget::Primary => {
+                        if self.config.primary_color == hex {
+                            return;
+                        }
+                        self.config.primary_color = hex.clone();
+                        self.primary_color_entry.set_text(&hex);
+                    }
+                    ColorTarget::Secondary => {
+                        if self.config.secondary_color == hex {
+                            return;
+                        }
+                        self.config.secondary_color = hex.clone();
+                        self.secondary_color_entry.set_text(&hex);
+                    }
+                }
+                self.config.save();
+                config::apply_css(&self.config);
+            }
+            AppMsg::SetBorderRadius(val) => {
+                if self.config.border_radius == val {
+                    return;
+                }
+                self.config.border_radius = val;
+                self.config.save();
+                config::apply_css(&self.config);
+            }
+            AppMsg::SetSpacing(val) => {
+                if self.config.spacing == val {
+                    return;
+                }
+                self.config.spacing = val;
+                self.config.save();
+            }
+            AppMsg::SetRowPadding(val) => {
+                if self.config.row_padding == val {
+                    return;
+                }
+                self.config.row_padding = val;
+                self.config.save();
+                config::apply_css(&self.config);
+            }
+            AppMsg::SetMarginBottom(val) => {
+                if self.config.margin_bottom == val {
+                    return;
+                }
+                self.config.margin_bottom = val;
+                self.config.save();
+                apply_layer_shell_position(&self.window, &self.config);
+            }
+            AppMsg::SetMarginLeft(val) => {
+                if self.config.margin_left == val {
+                    return;
+                }
+                self.config.margin_left = val;
+                self.config.save();
+                apply_layer_shell_position(&self.window, &self.config);
+            }
+            AppMsg::SetCloseOnConnect(enabled) => {
+                if self.config.close_on_connect == enabled {
+                    return;
+                }
+                self.config.close_on_connect = enabled;
+                self.config.save();
+            }
+            AppMsg::SetCloseOnFocusLoss(enabled) => {
+                if self.config.close_on_focus_loss == enabled {
+                    return;
+                }
+                self.config.close_on_focus_loss = enabled;
+                self.close_on_focus_loss_flag.set(enabled);
+                self.config.save();
+            }
+            AppMsg::SetMinSignal(val) => {
+                if self.config.min_signal_strength == val {
+                    return;
+                }
+                self.config.min_signal_strength = val;
+                self.config.save();
+            }
+            AppMsg::OpenConfigFile => {
+                if let Some((_, config_path, _)) = config::paths() {
+                    self.open_app_chooser(config_path, &sender);
+                }
+            }
+            AppMsg::OpenStyleFile => {
+                if let Some((_, _, style_path)) = config::paths() {
+                    self.open_app_chooser(style_path, &sender);
+                }
+            }
+            AppMsg::LaunchWithApp(idx) => {
+                if let (Some(app), Some(path)) =
+                    (self.app_chooser_apps.get(idx), self.app_chooser_path.as_ref())
+                {
+                    let file = gio::File::for_path(path);
+                    if let Err(e) = app.launch(&[file], gio::AppLaunchContext::NONE) {
+                        tracing::warn!("Falha ao abrir com {}: {e}", app.display_name());
+                    }
+                }
+                self.app_chooser_path = None;
+                self.app_chooser_apps.clear();
+            }
+            AppMsg::CloseAppChooser => {
+                self.app_chooser_path = None;
+                self.app_chooser_apps.clear();
+            }
+            AppMsg::ReloadCss => {
+                config::apply_css(&self.config);
+                self.status_text = i18n::strings(self.config.language).css_reloaded.to_string();
             }
             AppMsg::ToggleWifi(enabled) => {
                 if self.wifi_enabled == enabled {
@@ -998,6 +1775,51 @@ impl SimpleComponent for WifiApp {
 }
 
 impl WifiApp {
+    fn open_app_chooser(&mut self, path: std::path::PathBuf, sender: &ComponentSender<Self>) {
+        if self.app_chooser_path.as_ref() == Some(&path) {
+            self.app_chooser_path = None;
+            self.app_chooser_apps.clear();
+            return;
+        }
+
+        while let Some(child) = self.app_chooser_list.first_child() {
+            self.app_chooser_list.remove(&child);
+        }
+
+        let (content_type, _) = gio::content_type_guess(Some(&path), None);
+        let mut apps = gio::AppInfo::all_for_type(&content_type);
+        if apps.is_empty() {
+            apps = gio::AppInfo::all_for_type("text/plain");
+        }
+        apps.retain(|a| a.should_show());
+
+        for (idx, app) in apps.iter().enumerate() {
+            let row_btn = gtk::Button::new();
+            row_btn.set_has_frame(false);
+            row_btn.add_css_class("wifi-popover-btn");
+
+            let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            if let Some(icon) = app.icon() {
+                let img = gtk::Image::from_gicon(&icon);
+                hbox.append(&img);
+            }
+            let lbl = gtk::Label::new(Some(&app.display_name()));
+            lbl.set_halign(gtk::Align::Start);
+            lbl.set_hexpand(true);
+            hbox.append(&lbl);
+
+            row_btn.set_child(Some(&hbox));
+            let sender_clone = sender.clone();
+            row_btn.connect_clicked(move |_| {
+                sender_clone.input(AppMsg::LaunchWithApp(idx));
+            });
+            self.app_chooser_list.append(&row_btn);
+        }
+
+        self.app_chooser_apps = apps;
+        self.app_chooser_path = Some(path);
+    }
+
     fn refresh_hidden_can_submit(&mut self) {
         let has_ssid = !self.hidden_ssid_entry.text().trim().is_empty();
         let has_pass = self.hidden_security == WifiSecurity::Open
@@ -1257,6 +2079,19 @@ fn build_menu_popover(
     (popover, buttons)
 }
 
+fn config_dir_display() -> String {
+    config::paths()
+        .map(|(dir, _, _)| dir.display().to_string())
+        .unwrap_or_else(|| "~/.config/just-wifi-menu".to_string())
+}
+
+fn rgba_to_hex(rgba: &gdk::RGBA) -> String {
+    let r = (rgba.red().clamp(0.0, 1.0) * 255.0).round() as u8;
+    let g = (rgba.green().clamp(0.0, 1.0) * 255.0).round() as u8;
+    let b = (rgba.blue().clamp(0.0, 1.0) * 255.0).round() as u8;
+    format!("#{r:02x}{g:02x}{b:02x}")
+}
+
 fn setup_layer_shell(window: &gtk::ApplicationWindow, config: &AppConfig) {
     if !gtk4_layer_shell::is_supported() {
         tracing::warn!(
@@ -1272,11 +2107,22 @@ fn setup_layer_shell(window: &gtk::ApplicationWindow, config: &AppConfig) {
     window.set_namespace(Some("just-wifi-menu"));
     window.set_layer(Layer::Overlay);
     window.set_keyboard_mode(KeyboardMode::OnDemand);
+    apply_layer_shell_position(window, config);
+}
+
+fn apply_layer_shell_position(window: &gtk::ApplicationWindow, config: &AppConfig) {
+    if !gtk4_layer_shell::is_supported() {
+        return;
+    }
 
     window.set_margin(Edge::Top, config.margin_top);
     window.set_margin(Edge::Right, config.margin_right);
     window.set_margin(Edge::Bottom, config.margin_bottom);
     window.set_margin(Edge::Left, config.margin_left);
+
+    for edge in [Edge::Top, Edge::Right, Edge::Bottom, Edge::Left] {
+        window.set_anchor(edge, false);
+    }
 
     match config.anchor.as_str() {
         "top-right" => {
@@ -1302,7 +2148,7 @@ fn setup_layer_shell(window: &gtk::ApplicationWindow, config: &AppConfig) {
 fn setup_close_handlers(
     window: &gtk::ApplicationWindow,
     menu_popover: &gtk::Popover,
-    config: &AppConfig,
+    close_on_focus_loss: &Rc<Cell<bool>>,
     sender: &ComponentSender<WifiApp>,
 ) {
     let key_controller = gtk::EventControllerKey::new();
@@ -1317,29 +2163,31 @@ fn setup_close_handlers(
     });
     window.add_controller(key_controller);
 
-    if config.close_on_focus_loss {
-        let was_active = Cell::new(false);
-        let popover_ref = menu_popover.clone();
-        window.connect_is_active_notify(move |win| {
-            if win.is_active() {
-                was_active.set(true);
-            } else if was_active.get() && !popover_ref.is_visible() {
+    let was_active = Cell::new(false);
+    let popover_ref = menu_popover.clone();
+    let flag_focus = Rc::clone(close_on_focus_loss);
+    window.connect_is_active_notify(move |win| {
+        if win.is_active() {
+            was_active.set(true);
+        } else if flag_focus.get() && was_active.get() && !popover_ref.is_visible() {
+            relm4::main_application().quit();
+        }
+    });
+
+    let win_weak = window.downgrade();
+    let flag_popover = Rc::clone(close_on_focus_loss);
+    menu_popover.connect_closed(move |_| {
+        let win_weak = win_weak.clone();
+        let flag = Rc::clone(&flag_popover);
+        gtk::glib::idle_add_local_once(move || {
+            if flag.get()
+                && let Some(win) = win_weak.upgrade()
+                && !win.is_active()
+            {
                 relm4::main_application().quit();
             }
         });
-
-        let win_weak = window.downgrade();
-        menu_popover.connect_closed(move |_| {
-            let win_weak = win_weak.clone();
-            gtk::glib::idle_add_local_once(move || {
-                if let Some(win) = win_weak.upgrade()
-                    && !win.is_active()
-                {
-                    relm4::main_application().quit();
-                }
-            });
-        });
-    }
+    });
 }
 
 pub fn run_gui(config: AppConfig) {
