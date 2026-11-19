@@ -186,7 +186,9 @@ pub fn apply_css(config: &AppConfig) {
 
 fn build_dynamic_css(config: &AppConfig) -> String {
     let radius = config.border_radius.clamp(0, 32);
+    let shell_radius = (radius + 4).clamp(4, 36);
     let pad = config.row_padding.clamp(0, 24);
+    let gap = config.spacing.clamp(2, 24);
     let primary = sanitize_color(&config.primary_color, "#89b4fa");
     let secondary = sanitize_color(&config.secondary_color, "#313244");
     let bg = sanitize_color(&config.bg_color, "#181825");
@@ -197,14 +199,17 @@ fn build_dynamic_css(config: &AppConfig) -> String {
 @define-color menu_bg alpha({bg}, 0.96);
 @define-color menu_surface alpha({secondary}, 0.78);
 @define-color menu_surface_hover alpha({secondary}, 0.98);
-@define-color menu_connected alpha({primary}, 0.20);
-@define-color menu_border alpha({primary}, 0.45);
+@define-color menu_connected alpha({primary}, 0.18);
+@define-color menu_border alpha({primary}, 0.42);
 @define-color menu_accent {primary};
 @define-color menu_text {text};
 
+.wifi-menu-shell {{
+    border-radius: {shell_radius}px;
+}}
+
 .wifi-list > row {{
-    border-radius: {radius}px;
-    margin-bottom: {pad}px;
+    margin-bottom: {gap}px;
 }}
 
 .wifi-row,
@@ -214,9 +219,10 @@ fn build_dynamic_css(config: &AppConfig) -> String {
 }}
 
 .wifi-row {{
-    padding: {pad}px;
+    padding: {pad}px 10px;
 }}
 
+.wifi-icon-btn,
 .wifi-action-btn,
 .wifi-scan-btn,
 .wifi-connect-btn,

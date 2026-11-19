@@ -65,11 +65,7 @@ impl FactoryComponent for NetworkRow {
     view! {
         gtk::Box {
             set_orientation: gtk::Orientation::Vertical,
-            set_spacing: 6,
-            set_margin_top: 6,
-            set_margin_bottom: 6,
-            set_margin_start: 8,
-            set_margin_end: 8,
+            set_spacing: 4,
             add_css_class: "wifi-row",
             add_css_class: if self.network.connected {
                 "wifi-row-connected"
@@ -103,13 +99,6 @@ impl FactoryComponent for NetworkRow {
                             }),
                         },
 
-                        gtk::Image {
-                            set_icon_name: Some(signal_icon_name(
-                                self.network.strength,
-                                self.network.secured,
-                            )),
-                        },
-
                         gtk::Box {
                             set_orientation: gtk::Orientation::Vertical,
                             set_hexpand: true,
@@ -130,9 +119,17 @@ impl FactoryComponent for NetworkRow {
                             },
                         },
 
-                        gtk::Label {
-                            set_label: &format!("{}%", self.network.strength),
-                            add_css_class: "wifi-strength",
+                        gtk::Image {
+                            set_icon_name: Some("changes-prevent-symbolic"),
+                            set_visible: self.network.secured,
+                            set_pixel_size: 13,
+                            add_css_class: "wifi-lock-icon",
+                        },
+
+                        gtk::Image {
+                            set_icon_name: Some(signal_icon_name(self.network.strength)),
+                            set_pixel_size: 16,
+                            add_css_class: "wifi-signal-icon",
                         },
                     },
                 },
@@ -144,6 +141,7 @@ impl FactoryComponent for NetworkRow {
                     } else {
                         i18n::strings(self.lang).connect
                     },
+                    set_valign: gtk::Align::Center,
                     add_css_class: "wifi-action-btn",
                     connect_clicked[sender, net = self.network.clone()] => move |_| {
                         let msg = if net.connected {
@@ -384,7 +382,10 @@ fn details_summary(net: &WifiNetwork, details: Option<&NetworkDetails>, lang: La
     let sec = details
         .map(|d| d.security_label.as_str())
         .unwrap_or(if net.secured { s.secured } else { s.open });
-    format!("{}: {band} ({} MHz) • {}: {sec}", s.frequency_label, net.frequency, s.security_label)
+    format!(
+        "{band} ({} MHz) • {}% • {sec}",
+        net.frequency, net.strength
+    )
 }
 
 fn ip_summary(details: Option<&NetworkDetails>) -> String {
@@ -421,22 +422,12 @@ fn subtitle_text(net: &WifiNetwork, lang: Language) -> String {
     format!("{state} • {band}")
 }
 
-fn signal_icon_name(strength: u8, secured: bool) -> &'static str {
-    let level = match strength {
-        75..=100 => "excellent",
-        50..=74 => "good",
-        25..=49 => "ok",
-        _ => "weak",
-    };
-
-    match (level, secured) {
-        ("excellent", true) => "network-wireless-signal-excellent-secure-symbolic",
-        ("excellent", false) => "network-wireless-signal-excellent-symbolic",
-        ("good", true) => "network-wireless-signal-good-secure-symbolic",
-        ("good", false) => "network-wireless-signal-good-symbolic",
-        ("ok", true) => "network-wireless-signal-ok-secure-symbolic",
-        ("ok", false) => "network-wireless-signal-ok-symbolic",
-        (_, true) => "network-wireless-signal-weak-secure-symbolic",
-        (_, false) => "network-wireless-signal-weak-symbolic",
+fn signal_icon_name(strength: u8) -> &'static str {
+    match strength {
+        75..=100 => "network-wireless-signal-excellent-symbolic",
+        50..=74 => "network-wireless-signal-good-symbolic",
+        25..=49 => "network-wireless-signal-ok-symbolic",
+        1..=24 => "network-wireless-signal-weak-symbolic",
+        _ => "network-wireless-signal-none-symbolic",
     }
 }

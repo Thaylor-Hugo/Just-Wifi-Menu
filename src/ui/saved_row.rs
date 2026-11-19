@@ -47,11 +47,7 @@ impl FactoryComponent for SavedRow {
     view! {
         gtk::Box {
             set_orientation: gtk::Orientation::Vertical,
-            set_spacing: 6,
-            set_margin_top: 6,
-            set_margin_bottom: 6,
-            set_margin_start: 8,
-            set_margin_end: 8,
+            set_spacing: 4,
             add_css_class: "wifi-row",
 
             gtk::Button {

@@ -1,25 +1,30 @@
 /* Tema padrão do Just-Wifi-Menu (GTK4 CSS)
- * Você pode personalizar este arquivo em ~/.config/just-wifi-menu/style.css
- * Dica: rode `GTK_DEBUG=interactive cargo run` para inspecionar classes ao vivo.
+ * Personalizável pela aba Personalização ou em ~/.config/just-wifi-menu/style.css
  */
 
 @define-color menu_bg rgba(24, 24, 37, 0.96);
 @define-color menu_surface rgba(49, 50, 68, 0.72);
-@define-color menu_surface_hover rgba(69, 71, 90, 0.85);
-@define-color menu_connected rgba(137, 180, 250, 0.18);
-@define-color menu_border rgba(137, 180, 250, 0.35);
+@define-color menu_surface_hover rgba(69, 71, 90, 0.90);
+@define-color menu_connected rgba(137, 180, 250, 0.16);
+@define-color menu_border rgba(137, 180, 250, 0.32);
 @define-color menu_accent #89b4fa;
 @define-color menu_text #cdd6f4;
 @define-color menu_subtext #a6adc8;
 @define-color menu_danger #f38ba8;
 
 .wifi-menu-window {
-    background-color: @menu_bg;
+    background-color: transparent;
     color: @menu_text;
 }
 
+.wifi-menu-shell {
+    background-color: @menu_bg;
+    border: 1px solid @menu_border;
+    border-radius: 14px;
+}
+
 .wifi-title {
-    font-size: 16px;
+    font-size: 15px;
     font-weight: 700;
 }
 
@@ -35,16 +40,21 @@
 .wifi-list > row {
     padding: 0;
     margin-bottom: 6px;
-    border-radius: 10px;
-    background-color: @menu_surface;
+    background-color: transparent;
 }
 
 .wifi-list > row:hover {
-    background-color: @menu_surface_hover;
+    background-color: transparent;
 }
 
 .wifi-row {
+    background-color: @menu_surface;
     border-radius: 10px;
+    padding: 8px 10px;
+}
+
+.wifi-row:hover {
+    background-color: @menu_surface_hover;
 }
 
 .wifi-row-connected {
@@ -53,7 +63,7 @@
 }
 
 .wifi-ssid {
-    font-size: 14px;
+    font-size: 13px;
     font-weight: 600;
 }
 
@@ -62,19 +72,24 @@
     color: @menu_subtext;
 }
 
-.wifi-strength {
-    font-size: 12px;
-    color: @menu_subtext;
+.wifi-icon-btn {
+    min-width: 30px;
+    min-height: 30px;
+    padding: 4px;
+    border-radius: 8px;
 }
 
 .wifi-action-btn,
-.wifi-scan-btn {
-    border-radius: 8px;
+.wifi-scan-btn,
+.wifi-connect-btn,
+.wifi-forget-btn {
+    min-height: 28px;
     padding: 4px 10px;
+    font-size: 12px;
+    border-radius: 8px;
 }
 
 .wifi-forget-btn {
-    border-radius: 8px;
     color: @menu_danger;
 }
 
@@ -89,19 +104,19 @@
     background-color: @menu_accent;
     color: #11111b;
     font-weight: 600;
-    border-radius: 8px;
 }
 
 .wifi-menu-popover contents {
     background-color: @menu_bg;
     border: 1px solid @menu_border;
-    border-radius: 10px;
+    border-radius: 12px;
     padding: 6px;
 }
 
 .wifi-popover-btn {
-    border-radius: 6px;
-    padding: 6px 12px;
+    border-radius: 8px;
+    padding: 6px 10px;
+    font-size: 13px;
 }
 
 .wifi-popover-btn:hover {
@@ -109,17 +124,34 @@
 }
 
 .wifi-about-card {
-    padding: 16px;
+    padding: 12px;
     border-radius: 12px;
     background-color: @menu_surface;
 }
 
 .wifi-row-expand-btn {
     padding: 0;
+    background: transparent;
+    border: none;
+    box-shadow: none;
+}
+
+.wifi-row-expand-btn:hover {
+    background: transparent;
 }
 
 .wifi-details-box {
-    padding: 8px;
+    padding: 8px 10px;
+    margin-top: 4px;
     border-radius: 8px;
-    background-color: rgba(17, 17, 27, 0.45);
+    background-color: rgba(17, 17, 27, 0.42);
+}
+
+.wifi-signal-icon {
+    color: @menu_subtext;
+}
+
+.wifi-lock-icon {
+    color: @menu_subtext;
+    opacity: 0.75;
 }

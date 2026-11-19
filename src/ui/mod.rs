@@ -201,10 +201,16 @@ impl SimpleComponent for WifiApp {
             set_default_height: model.config.window_height,
             add_css_class: "wifi-menu-window",
 
-            #[local_ref]
-            stack -> gtk::Stack {
-                set_transition_type: gtk::StackTransitionType::SlideLeftRight,
-                set_transition_duration: 180,
+            gtk::Box {
+                set_orientation: gtk::Orientation::Vertical,
+                add_css_class: "wifi-menu-shell",
+
+                #[local_ref]
+                stack -> gtk::Stack {
+                    set_transition_type: gtk::StackTransitionType::SlideLeftRight,
+                    set_transition_duration: 180,
+                    set_vexpand: true,
+                    set_hexpand: true,
 
                 // Página principal: lista de redes Wi-Fi
                 add_named[Some("main")] = &gtk::Box {
@@ -214,25 +220,22 @@ impl SimpleComponent for WifiApp {
                     set_margin_all: 12,
                     add_css_class: "wifi-menu-container",
 
-                    // Cabeçalho: título + spinner + botão de scan + switch Wi-Fi + menu 3 pontinhos
+                    // Cabeçalho: título + spinner + botão de adicionar + scan + switch + 3 pontinhos
                     gtk::Box {
                         set_orientation: gtk::Orientation::Horizontal,
-                        set_spacing: 8,
+                        set_spacing: 6,
                         add_css_class: "wifi-header",
 
                         gtk::Label {
-                            #[watch]
-                            set_label: &if model.interface.is_empty() {
-                                "Wi-Fi".to_string()
-                            } else {
-                                format!("Wi-Fi ({})", model.interface)
-                            },
+                            set_label: "Just Wifi Menu",
                             set_hexpand: true,
                             set_halign: gtk::Align::Start,
+                            set_valign: gtk::Align::Center,
                             add_css_class: "wifi-title",
                         },
 
                         gtk::Spinner {
+                            set_valign: gtk::Align::Center,
                             #[watch]
                             set_spinning: model.scanning,
                             #[watch]
@@ -243,7 +246,8 @@ impl SimpleComponent for WifiApp {
                             set_icon_name: "list-add-symbolic",
                             #[watch]
                             set_tooltip_text: Some(i18n::strings(model.config.language).add_hidden_tooltip),
-                            add_css_class: "wifi-action-btn",
+                            set_valign: gtk::Align::Center,
+                            add_css_class: "wifi-icon-btn",
                             #[watch]
                             set_sensitive: model.wifi_enabled,
                             connect_clicked => AppMsg::Navigate(ActivePage::AddNetwork),
@@ -253,13 +257,15 @@ impl SimpleComponent for WifiApp {
                             set_icon_name: "view-refresh-symbolic",
                             #[watch]
                             set_tooltip_text: Some(i18n::strings(model.config.language).scan_tooltip),
-                            add_css_class: "wifi-scan-btn",
+                            set_valign: gtk::Align::Center,
+                            add_css_class: "wifi-icon-btn",
                             #[watch]
                             set_sensitive: model.wifi_enabled && !model.scanning,
                             connect_clicked => AppMsg::Scan,
                         },
 
                         gtk::Switch {
+                            set_valign: gtk::Align::Center,
                             #[watch]
                             set_active: model.wifi_enabled,
                             connect_state_set[sender] => move |_, enabled| {
@@ -272,7 +278,8 @@ impl SimpleComponent for WifiApp {
                             set_icon_name: "view-more-symbolic",
                             #[watch]
                             set_tooltip_text: Some(i18n::strings(model.config.language).options_tooltip),
-                            add_css_class: "wifi-action-btn",
+                            set_valign: gtk::Align::Center,
+                            add_css_class: "wifi-icon-btn",
                             set_popover: Some(&model.menu_popover),
                         },
                     },
@@ -791,62 +798,103 @@ impl SimpleComponent for WifiApp {
                                     },
                                 },
 
+                                // Geometria em 2 colunas (sem vazios no centro)
                                 gtk::Box {
                                     set_orientation: gtk::Orientation::Horizontal,
-                                    set_spacing: 8,
+                                    set_spacing: 10,
+                                    set_homogeneous: true,
 
-                                    gtk::Label {
-                                        #[watch]
-                                        set_label: i18n::strings(model.config.language).border_radius_label,
-                                        set_hexpand: true,
-                                        set_halign: gtk::Align::Start,
-                                        add_css_class: "wifi-subtitle",
+                                    gtk::Box {
+                                        set_orientation: gtk::Orientation::Vertical,
+                                        set_spacing: 4,
+
+                                        gtk::Label {
+                                            #[watch]
+                                            set_label: i18n::strings(model.config.language).border_radius_label,
+                                            set_halign: gtk::Align::Start,
+                                            add_css_class: "wifi-subtitle",
+                                        },
+
+                                        gtk::SpinButton::with_range(0.0, 24.0, 2.0) {
+                                            set_value: model.config.border_radius as f64,
+                                            connect_realize => |spin| {
+                                                disable_scroll_until_focused(spin);
+                                            },
+                                            connect_value_changed[sender] => move |spin| {
+                                                sender.input(AppMsg::SetBorderRadius(spin.value_as_int()));
+                                            },
+                                        },
                                     },
 
-                                    gtk::SpinButton::with_range(0.0, 24.0, 2.0) {
-                                        set_value: model.config.border_radius as f64,
-                                        connect_value_changed[sender] => move |spin| {
-                                            sender.input(AppMsg::SetBorderRadius(spin.value_as_int()));
+                                    gtk::Box {
+                                        set_orientation: gtk::Orientation::Vertical,
+                                        set_spacing: 4,
+
+                                        gtk::Label {
+                                            #[watch]
+                                            set_label: i18n::strings(model.config.language).spacing_label,
+                                            set_halign: gtk::Align::Start,
+                                            add_css_class: "wifi-subtitle",
+                                        },
+
+                                        gtk::SpinButton::with_range(2.0, 24.0, 2.0) {
+                                            set_value: model.config.spacing as f64,
+                                            connect_realize => |spin| {
+                                                disable_scroll_until_focused(spin);
+                                            },
+                                            connect_value_changed[sender] => move |spin| {
+                                                sender.input(AppMsg::SetSpacing(spin.value_as_int()));
+                                            },
                                         },
                                     },
                                 },
 
                                 gtk::Box {
                                     set_orientation: gtk::Orientation::Horizontal,
-                                    set_spacing: 8,
+                                    set_spacing: 10,
+                                    set_homogeneous: true,
 
-                                    gtk::Label {
-                                        #[watch]
-                                        set_label: i18n::strings(model.config.language).spacing_label,
-                                        set_hexpand: true,
-                                        set_halign: gtk::Align::Start,
-                                        add_css_class: "wifi-subtitle",
-                                    },
+                                    gtk::Box {
+                                        set_orientation: gtk::Orientation::Vertical,
+                                        set_spacing: 4,
 
-                                    gtk::SpinButton::with_range(2.0, 24.0, 2.0) {
-                                        set_value: model.config.spacing as f64,
-                                        connect_value_changed[sender] => move |spin| {
-                                            sender.input(AppMsg::SetSpacing(spin.value_as_int()));
+                                        gtk::Label {
+                                            #[watch]
+                                            set_label: i18n::strings(model.config.language).row_padding_label,
+                                            set_halign: gtk::Align::Start,
+                                            add_css_class: "wifi-subtitle",
+                                        },
+
+                                        gtk::SpinButton::with_range(2.0, 20.0, 2.0) {
+                                            set_value: model.config.row_padding as f64,
+                                            connect_realize => |spin| {
+                                                disable_scroll_until_focused(spin);
+                                            },
+                                            connect_value_changed[sender] => move |spin| {
+                                                sender.input(AppMsg::SetRowPadding(spin.value_as_int()));
+                                            },
                                         },
                                     },
-                                },
 
-                                gtk::Box {
-                                    set_orientation: gtk::Orientation::Horizontal,
-                                    set_spacing: 8,
+                                    gtk::Box {
+                                        set_orientation: gtk::Orientation::Vertical,
+                                        set_spacing: 4,
 
-                                    gtk::Label {
-                                        #[watch]
-                                        set_label: i18n::strings(model.config.language).row_padding_label,
-                                        set_hexpand: true,
-                                        set_halign: gtk::Align::Start,
-                                        add_css_class: "wifi-subtitle",
-                                    },
+                                        gtk::Label {
+                                            #[watch]
+                                            set_label: i18n::strings(model.config.language).min_signal_label,
+                                            set_halign: gtk::Align::Start,
+                                            add_css_class: "wifi-subtitle",
+                                        },
 
-                                    gtk::SpinButton::with_range(2.0, 20.0, 2.0) {
-                                        set_value: model.config.row_padding as f64,
-                                        connect_value_changed[sender] => move |spin| {
-                                            sender.input(AppMsg::SetRowPadding(spin.value_as_int()));
+                                        gtk::SpinButton::with_range(0.0, 90.0, 5.0) {
+                                            set_value: model.config.min_signal_strength as f64,
+                                            connect_realize => |spin| {
+                                                disable_scroll_until_focused(spin);
+                                            },
+                                            connect_value_changed[sender] => move |spin| {
+                                                sender.input(AppMsg::SetMinSignal(spin.value_as_int().clamp(0, 100) as u8));
+                                            },
                                         },
                                     },
                                 },
@@ -900,82 +948,103 @@ impl SimpleComponent for WifiApp {
                                     },
                                 },
 
+                                // Margens em grid 2x2
                                 gtk::Box {
                                     set_orientation: gtk::Orientation::Horizontal,
-                                    set_spacing: 8,
+                                    set_spacing: 10,
+                                    set_homogeneous: true,
 
-                                    gtk::Label {
-                                        #[watch]
-                                        set_label: i18n::strings(model.config.language).margin_top_label,
-                                        set_hexpand: true,
-                                        set_halign: gtk::Align::Start,
-                                        add_css_class: "wifi-subtitle",
+                                    gtk::Box {
+                                        set_orientation: gtk::Orientation::Vertical,
+                                        set_spacing: 4,
+
+                                        gtk::Label {
+                                            #[watch]
+                                            set_label: i18n::strings(model.config.language).margin_top_label,
+                                            set_halign: gtk::Align::Start,
+                                            add_css_class: "wifi-subtitle",
+                                        },
+
+                                        gtk::SpinButton::with_range(0.0, 120.0, 2.0) {
+                                            set_value: model.config.margin_top as f64,
+                                            connect_realize => |spin| {
+                                                disable_scroll_until_focused(spin);
+                                            },
+                                            connect_value_changed[sender] => move |spin| {
+                                                sender.input(AppMsg::SetMarginTop(spin.value_as_int()));
+                                            },
+                                        },
                                     },
 
-                                    gtk::SpinButton::with_range(0.0, 120.0, 2.0) {
-                                        set_value: model.config.margin_top as f64,
-                                        connect_value_changed[sender] => move |spin| {
-                                            sender.input(AppMsg::SetMarginTop(spin.value_as_int()));
+                                    gtk::Box {
+                                        set_orientation: gtk::Orientation::Vertical,
+                                        set_spacing: 4,
+
+                                        gtk::Label {
+                                            #[watch]
+                                            set_label: i18n::strings(model.config.language).margin_bottom_label,
+                                            set_halign: gtk::Align::Start,
+                                            add_css_class: "wifi-subtitle",
+                                        },
+
+                                        gtk::SpinButton::with_range(0.0, 120.0, 2.0) {
+                                            set_value: model.config.margin_bottom as f64,
+                                            connect_realize => |spin| {
+                                                disable_scroll_until_focused(spin);
+                                            },
+                                            connect_value_changed[sender] => move |spin| {
+                                                sender.input(AppMsg::SetMarginBottom(spin.value_as_int()));
+                                            },
                                         },
                                     },
                                 },
 
                                 gtk::Box {
                                     set_orientation: gtk::Orientation::Horizontal,
-                                    set_spacing: 8,
+                                    set_spacing: 10,
+                                    set_homogeneous: true,
 
-                                    gtk::Label {
-                                        #[watch]
-                                        set_label: i18n::strings(model.config.language).margin_right_label,
-                                        set_hexpand: true,
-                                        set_halign: gtk::Align::Start,
-                                        add_css_class: "wifi-subtitle",
-                                    },
+                                    gtk::Box {
+                                        set_orientation: gtk::Orientation::Vertical,
+                                        set_spacing: 4,
 
-                                    gtk::SpinButton::with_range(0.0, 120.0, 2.0) {
-                                        set_value: model.config.margin_right as f64,
-                                        connect_value_changed[sender] => move |spin| {
-                                            sender.input(AppMsg::SetMarginRight(spin.value_as_int()));
+                                        gtk::Label {
+                                            #[watch]
+                                            set_label: i18n::strings(model.config.language).margin_left_label,
+                                            set_halign: gtk::Align::Start,
+                                            add_css_class: "wifi-subtitle",
+                                        },
+
+                                        gtk::SpinButton::with_range(0.0, 120.0, 2.0) {
+                                            set_value: model.config.margin_left as f64,
+                                            connect_realize => |spin| {
+                                                disable_scroll_until_focused(spin);
+                                            },
+                                            connect_value_changed[sender] => move |spin| {
+                                                sender.input(AppMsg::SetMarginLeft(spin.value_as_int()));
+                                            },
                                         },
                                     },
-                                },
 
-                                gtk::Box {
-                                    set_orientation: gtk::Orientation::Horizontal,
-                                    set_spacing: 8,
+                                    gtk::Box {
+                                        set_orientation: gtk::Orientation::Vertical,
+                                        set_spacing: 4,
 
-                                    gtk::Label {
-                                        #[watch]
-                                        set_label: i18n::strings(model.config.language).margin_bottom_label,
-                                        set_hexpand: true,
-                                        set_halign: gtk::Align::Start,
-                                        add_css_class: "wifi-subtitle",
-                                    },
-
-                                    gtk::SpinButton::with_range(0.0, 120.0, 2.0) {
-                                        set_value: model.config.margin_bottom as f64,
-                                        connect_value_changed[sender] => move |spin| {
-                                            sender.input(AppMsg::SetMarginBottom(spin.value_as_int()));
+                                        gtk::Label {
+                                            #[watch]
+                                            set_label: i18n::strings(model.config.language).margin_right_label,
+                                            set_halign: gtk::Align::Start,
+                                            add_css_class: "wifi-subtitle",
                                         },
-                                    },
-                                },
 
-                                gtk::Box {
-                                    set_orientation: gtk::Orientation::Horizontal,
-                                    set_spacing: 8,
-
-                                    gtk::Label {
-                                        #[watch]
-                                        set_label: i18n::strings(model.config.language).margin_left_label,
-                                        set_hexpand: true,
-                                        set_halign: gtk::Align::Start,
-                                        add_css_class: "wifi-subtitle",
-                                    },
-
-                                    gtk::SpinButton::with_range(0.0, 120.0, 2.0) {
-                                        set_value: model.config.margin_left as f64,
-                                        connect_value_changed[sender] => move |spin| {
-                                            sender.input(AppMsg::SetMarginLeft(spin.value_as_int()));
+                                        gtk::SpinButton::with_range(0.0, 120.0, 2.0) {
+                                            set_value: model.config.margin_right as f64,
+                                            connect_realize => |spin| {
+                                                disable_scroll_until_focused(spin);
+                                            },
+                                            connect_value_changed[sender] => move |spin| {
+                                                sender.input(AppMsg::SetMarginRight(spin.value_as_int()));
+                                            },
                                         },
                                     },
                                 },
@@ -1011,26 +1080,6 @@ impl SimpleComponent for WifiApp {
                                     set_active: model.config.close_on_focus_loss,
                                     connect_toggled[sender] => move |btn| {
                                         sender.input(AppMsg::SetCloseOnFocusLoss(btn.is_active()));
-                                    },
-                                },
-
-                                gtk::Box {
-                                    set_orientation: gtk::Orientation::Horizontal,
-                                    set_spacing: 8,
-
-                                    gtk::Label {
-                                        #[watch]
-                                        set_label: i18n::strings(model.config.language).min_signal_label,
-                                        set_hexpand: true,
-                                        set_halign: gtk::Align::Start,
-                                        add_css_class: "wifi-subtitle",
-                                    },
-
-                                    gtk::SpinButton::with_range(0.0, 90.0, 5.0) {
-                                        set_value: model.config.min_signal_strength as f64,
-                                        connect_value_changed[sender] => move |spin| {
-                                            sender.input(AppMsg::SetMinSignal(spin.value_as_int().clamp(0, 100) as u8));
-                                        },
                                     },
                                 },
                             },
@@ -1117,6 +1166,7 @@ impl SimpleComponent for WifiApp {
                     },
                 },
             }
+        }
         }
     }
 
@@ -2083,6 +2133,38 @@ fn config_dir_display() -> String {
     config::paths()
         .map(|(dir, _, _)| dir.display().to_string())
         .unwrap_or_else(|| "~/.config/just-wifi-menu".to_string())
+}
+
+fn disable_scroll_until_focused(spin: &gtk::SpinButton) {
+    let controllers = spin.observe_controllers();
+    let mut scroll_controllers = Vec::new();
+    for i in 0..controllers.n_items() {
+        if let Some(obj) = controllers.item(i)
+            && let Ok(scroll_ctrl) = obj.downcast::<gtk::EventControllerScroll>()
+        {
+            scroll_ctrl.set_propagation_phase(gtk::PropagationPhase::None);
+            scroll_controllers.push(scroll_ctrl);
+        }
+    }
+
+    if scroll_controllers.is_empty() {
+        return;
+    }
+
+    let focus_ctrl = gtk::EventControllerFocus::new();
+    let enter_ctrls = scroll_controllers.clone();
+    focus_ctrl.connect_enter(move |_| {
+        for c in &enter_ctrls {
+            c.set_propagation_phase(gtk::PropagationPhase::Bubble);
+        }
+    });
+    let leave_ctrls = scroll_controllers;
+    focus_ctrl.connect_leave(move |_| {
+        for c in &leave_ctrls {
+            c.set_propagation_phase(gtk::PropagationPhase::None);
+        }
+    });
+    spin.add_controller(focus_ctrl);
 }
 
 fn rgba_to_hex(rgba: &gdk::RGBA) -> String {

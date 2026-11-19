@@ -78,7 +78,6 @@ pub struct Strings {
     pub autoconnect: &'static str,
     pub yes: &'static str,
     pub no: &'static str,
-    pub frequency_label: &'static str,
     pub last_connected_label: &'static str,
     pub hidden_label: &'static str,
 }
@@ -153,7 +152,6 @@ const PT: Strings = Strings {
     autoconnect: "Auto-reconectar",
     yes: "Sim",
     no: "Não",
-    frequency_label: "Frequência",
     last_connected_label: "Última conexão",
     hidden_label: "Rede oculta",
 };
@@ -228,7 +226,6 @@ const EN: Strings = Strings {
     autoconnect: "Auto-connect",
     yes: "Yes",
     no: "No",
-    frequency_label: "Frequency",
     last_connected_label: "Last connected",
     hidden_label: "Hidden network",
 };
