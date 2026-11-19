@@ -1,8 +1,12 @@
 mod network_row;
 
+use std::cell::Cell;
+
 use futures::StreamExt;
+use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 use relm4::factory::FactoryVecDeque;
 use relm4::gtk;
+use relm4::gtk::gdk;
 use relm4::gtk::prelude::*;
 use relm4::prelude::*;
 use tokio::sync::mpsc;
@@ -32,6 +36,7 @@ pub enum AppMsg {
     SelectNetwork(WifiNetwork),
     ConnectWithPassword,
     CancelPassword,
+    EscapePressed,
     Disconnect,
     Forget(String),
     BackendState {
@@ -59,7 +64,7 @@ pub struct WifiApp {
 
 #[relm4::component(pub)]
 impl SimpleComponent for WifiApp {
-    type Init = ();
+    type Init = AppConfig;
     type Input = AppMsg;
     type Output = ();
 
@@ -191,12 +196,13 @@ impl SimpleComponent for WifiApp {
     }
 
     fn init(
-        _init: Self::Init,
+        config: Self::Init,
         root: Self::Root,
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
-        let config = AppConfig::load();
         config::apply_css();
+        setup_layer_shell(&root, &config);
+        setup_close_handlers(&root, &config, &sender);
 
         let networks = FactoryVecDeque::builder()
             .launch(gtk::ListBox::default())
@@ -282,6 +288,15 @@ impl SimpleComponent for WifiApp {
                 self.pending_network = None;
                 self.password_entry.set_text("");
                 self.status_text = "Conexão cancelada".to_string();
+            }
+            AppMsg::EscapePressed => {
+                if self.pending_network.is_some() {
+                    self.pending_network = None;
+                    self.password_entry.set_text("");
+                    self.status_text = "Conexão cancelada".to_string();
+                } else {
+                    relm4::main_application().quit();
+                }
             }
             AppMsg::Disconnect => {
                 self.connect_requested = false;
@@ -509,7 +524,76 @@ async fn emit_snapshot(manager: &WifiManager, sender: &ComponentSender<WifiApp>)
     });
 }
 
-pub fn run_gui() {
-    let app = RelmApp::new("com.just.wifi.menu");
-    app.run::<WifiApp>(());
+fn setup_layer_shell(window: &gtk::ApplicationWindow, config: &AppConfig) {
+    if !gtk4_layer_shell::is_supported() {
+        eprintln!(
+            "Aviso: gtk4-layer-shell não suportado neste backend (GDK_BACKEND={:?}).",
+            std::env::var("GDK_BACKEND").ok()
+        );
+        return;
+    }
+
+    window.init_layer_shell();
+    window.set_namespace(Some("just-wifi-menu"));
+    window.set_layer(Layer::Overlay);
+    window.set_keyboard_mode(KeyboardMode::OnDemand);
+
+    window.set_margin(Edge::Top, config.margin_top);
+    window.set_margin(Edge::Right, config.margin_right);
+    window.set_margin(Edge::Bottom, config.margin_bottom);
+    window.set_margin(Edge::Left, config.margin_left);
+
+    match config.anchor.as_str() {
+        "top-right" => {
+            window.set_anchor(Edge::Top, true);
+            window.set_anchor(Edge::Right, true);
+        }
+        "top-left" => {
+            window.set_anchor(Edge::Top, true);
+            window.set_anchor(Edge::Left, true);
+        }
+        "bottom-right" => {
+            window.set_anchor(Edge::Bottom, true);
+            window.set_anchor(Edge::Right, true);
+        }
+        "bottom-left" => {
+            window.set_anchor(Edge::Bottom, true);
+            window.set_anchor(Edge::Left, true);
+        }
+        _ => {}
+    }
+}
+
+fn setup_close_handlers(
+    window: &gtk::ApplicationWindow,
+    config: &AppConfig,
+    sender: &ComponentSender<WifiApp>,
+) {
+    let key_controller = gtk::EventControllerKey::new();
+    let sender_clone = sender.clone();
+    key_controller.connect_key_pressed(move |_, key, _, _| {
+        if key == gdk::Key::Escape {
+            sender_clone.input(AppMsg::EscapePressed);
+            gtk::glib::Propagation::Stop
+        } else {
+            gtk::glib::Propagation::Proceed
+        }
+    });
+    window.add_controller(key_controller);
+
+    if config.close_on_focus_loss {
+        let was_active = Cell::new(false);
+        window.connect_is_active_notify(move |win| {
+            if win.is_active() {
+                was_active.set(true);
+            } else if was_active.get() {
+                relm4::main_application().quit();
+            }
+        });
+    }
+}
+
+pub fn run_gui(config: AppConfig) {
+    let app = RelmApp::new("com.just.wifi.menu").with_args(vec![]);
+    app.run::<WifiApp>(config);
 }

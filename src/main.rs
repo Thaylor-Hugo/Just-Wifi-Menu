@@ -2,21 +2,103 @@ mod config;
 mod dbus;
 mod ui;
 
+use clap::{Args, Parser, Subcommand};
+use config::AppConfig;
 use dbus::wifi::{WifiManager, WifiNetwork};
 
-fn main() -> zbus::Result<()> {
-    let args: Vec<String> = std::env::args().collect();
-
-    if args.len() == 1 || args.get(1).map(String::as_str) == Some("gui") {
-        ui::run_gui();
-        return Ok(());
-    }
-
-    let runtime = tokio::runtime::Runtime::new()?;
-    runtime.block_on(run_cli(&args))
+#[derive(Parser)]
+#[command(name = "Just-Wifi-Menu", about = "Menu Wi-Fi customizável em GTK4 + Relm4")]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
 }
 
-async fn run_cli(args: &[String]) -> zbus::Result<()> {
+#[derive(Subcommand)]
+enum Command {
+    /// Abre a interface gráfica (padrão quando nenhum subcomando é passado)
+    Gui(GuiArgs),
+    /// Lista as redes Wi-Fi disponíveis
+    List,
+    /// Solicita um novo scan e lista as redes
+    Scan,
+    /// Liga ou desliga o rádio Wi-Fi
+    Toggle {
+        /// "on" ou "off"
+        state: String,
+    },
+    /// Conecta a uma rede pelo SSID
+    Connect {
+        ssid: String,
+        password: Option<String>,
+    },
+    /// Desconecta a interface Wi-Fi atual
+    Disconnect,
+    /// Remove o perfil salvo de um SSID
+    Forget { ssid: String },
+    /// Escuta eventos D-Bus do NetworkManager em tempo real
+    Watch,
+}
+
+#[derive(Args, Default)]
+struct GuiArgs {
+    /// Posição na tela: top-right, top-left, bottom-right, bottom-left, center
+    #[arg(long)]
+    anchor: Option<String>,
+    #[arg(long)]
+    margin_top: Option<i32>,
+    #[arg(long)]
+    margin_right: Option<i32>,
+    #[arg(long)]
+    margin_bottom: Option<i32>,
+    #[arg(long)]
+    margin_left: Option<i32>,
+}
+
+fn main() -> zbus::Result<()> {
+    let cli = Cli::parse();
+
+    match cli.command {
+        None => launch_gui(GuiArgs::default()),
+        Some(Command::Gui(args)) => launch_gui(args),
+        Some(cmd) => {
+            let runtime = tokio::runtime::Runtime::new()?;
+            runtime.block_on(run_cli(cmd))?;
+        }
+    }
+
+    Ok(())
+}
+
+fn launch_gui(args: GuiArgs) {
+    // Garante backend Wayland quando WAYLAND_DISPLAY estiver ativo (ex: terminais/IDEs com GDK_BACKEND=x11)
+    // para que o gtk4-layer-shell funcione no Hyprland. Chamado antes de iniciar threads/GTK.
+    if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+        unsafe {
+            std::env::set_var("GDK_BACKEND", "wayland");
+        }
+    }
+
+    let mut config = AppConfig::load();
+    if let Some(anchor) = args.anchor {
+        config.anchor = anchor;
+    }
+    if let Some(top) = args.margin_top {
+        config.margin_top = top;
+    }
+    if let Some(right) = args.margin_right {
+        config.margin_right = right;
+    }
+    if let Some(bottom) = args.margin_bottom {
+        config.margin_bottom = bottom;
+    }
+    if let Some(left) = args.margin_left {
+        config.margin_left = left;
+    }
+
+    ui::run_gui(config);
+}
+
+async fn run_cli(command: Command) -> zbus::Result<()> {
     let connection = dbus::connect_system().await?;
 
     let Some(manager) = WifiManager::new(connection).await? else {
@@ -24,10 +106,8 @@ async fn run_cli(args: &[String]) -> zbus::Result<()> {
         return Ok(());
     };
 
-    let command = args.get(1).map(String::as_str).unwrap_or("list");
-
     match command {
-        "list" => {
+        Command::List => {
             let enabled = manager.is_wireless_enabled().await?;
             println!(
                 "Interface: {} | Wi-Fi: {}",
@@ -37,59 +117,47 @@ async fn run_cli(args: &[String]) -> zbus::Result<()> {
             let networks = manager.list_networks().await?;
             print_networks(&networks);
         }
-        "scan" => {
+        Command::Scan => {
             println!("Solicitando scan em {}...", manager.interface);
             manager.request_scan().await?;
             let networks = manager.list_networks().await?;
             print_networks(&networks);
         }
-        "toggle" => match args.get(2).map(String::as_str) {
-            Some("on") => {
+        Command::Toggle { state } => match state.as_str() {
+            "on" => {
                 manager.set_wireless_enabled(true).await?;
                 println!("Wi-Fi ligado.");
             }
-            Some("off") => {
+            "off" => {
                 manager.set_wireless_enabled(false).await?;
                 println!("Wi-Fi desligado.");
             }
-            _ => println!("Uso: cargo run -- toggle <on|off>"),
+            _ => println!("Uso: Just-Wifi-Menu toggle <on|off>"),
         },
-        "connect" => {
-            let Some(ssid) = args.get(2) else {
-                println!("Uso: cargo run -- connect <ssid> [senha]");
-                return Ok(());
-            };
-            let password = args.get(3).map(String::as_str);
+        Command::Connect { ssid, password } => {
             let networks = manager.list_networks().await?;
-            let Some(target) = networks.iter().find(|n| n.ssid == *ssid) else {
+            let Some(target) = networks.iter().find(|n| n.ssid == ssid) else {
                 println!("Rede '{ssid}' não encontrada no scan atual.");
                 return Ok(());
             };
-            manager.connect(target, password).await?;
+            manager.connect(target, password.as_deref()).await?;
             println!("Solicitação de conexão enviada para '{ssid}'.");
         }
-        "disconnect" => {
+        Command::Disconnect => {
             manager.disconnect().await?;
             println!("Interface {} desconectada.", manager.interface);
         }
-        "forget" => {
-            let Some(ssid) = args.get(2) else {
-                println!("Uso: cargo run -- forget <ssid>");
-                return Ok(());
-            };
-            if manager.forget_network(ssid).await? {
+        Command::Forget { ssid } => {
+            if manager.forget_network(&ssid).await? {
                 println!("Perfil '{ssid}' removido.");
             } else {
                 println!("Nenhum perfil salvo encontrado para '{ssid}'.");
             }
         }
-        "watch" => {
+        Command::Watch => {
             manager.watch_events().await?;
         }
-        other => {
-            println!("Comando desconhecido: {other}");
-            println!("Comandos: list | scan | toggle <on|off> | connect <ssid> [senha] | disconnect | forget <ssid> | watch");
-        }
+        Command::Gui(_) => unreachable!(),
     }
 
     Ok(())

@@ -13,7 +13,13 @@ pub struct AppConfig {
     pub window_width: i32,
     pub window_height: i32,
     pub close_on_connect: bool,
+    pub close_on_focus_loss: bool,
     pub min_signal_strength: u8,
+    pub anchor: String,
+    pub margin_top: i32,
+    pub margin_right: i32,
+    pub margin_bottom: i32,
+    pub margin_left: i32,
 }
 
 impl Default for AppConfig {
@@ -22,7 +28,13 @@ impl Default for AppConfig {
             window_width: 400,
             window_height: 500,
             close_on_connect: false,
+            close_on_focus_loss: true,
             min_signal_strength: 0,
+            anchor: "top-right".to_string(),
+            margin_top: 8,
+            margin_right: 8,
+            margin_bottom: 8,
+            margin_left: 8,
         }
     }
 }
