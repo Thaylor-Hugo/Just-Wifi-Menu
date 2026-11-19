@@ -5,6 +5,7 @@ mod ui;
 use clap::{Args, Parser, Subcommand};
 use config::AppConfig;
 use dbus::wifi::{WifiManager, WifiNetwork};
+use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
 #[command(name = "Just-Wifi-Menu", about = "Menu Wi-Fi customizável em GTK4 + Relm4")]
@@ -55,6 +56,10 @@ struct GuiArgs {
 }
 
 fn main() -> zbus::Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .init();
+
     let cli = Cli::parse();
 
     match cli.command {

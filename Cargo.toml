@@ -10,6 +10,8 @@ gtk4-layer-shell = "0.7"
 relm4 = "0.10"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 zbus = { version = "4.0", features = ["blocking"] } # The D-Bus library
 tokio = { version = "1", features = ["full"] } # The Async runtime
 futures = "0.3" # Helpers for streams

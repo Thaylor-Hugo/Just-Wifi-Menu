@@ -526,12 +526,14 @@ async fn emit_snapshot(manager: &WifiManager, sender: &ComponentSender<WifiApp>)
 
 fn setup_layer_shell(window: &gtk::ApplicationWindow, config: &AppConfig) {
     if !gtk4_layer_shell::is_supported() {
-        eprintln!(
-            "Aviso: gtk4-layer-shell não suportado neste backend (GDK_BACKEND={:?}).",
-            std::env::var("GDK_BACKEND").ok()
+        tracing::warn!(
+            backend = ?std::env::var("GDK_BACKEND").ok(),
+            "gtk4-layer-shell não suportado neste backend"
         );
         return;
     }
+
+    tracing::debug!(anchor = %config.anchor, "Inicializando layer-shell");
 
     window.init_layer_shell();
     window.set_namespace(Some("just-wifi-menu"));

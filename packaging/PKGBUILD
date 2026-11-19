@@ -1,0 +1,22 @@
+# Maintainer: thaylor
+pkgname=just-wifi-menu
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Menu Wi-Fi customizável em GTK4 + Relm4 + zbus para Wayland/Hyprland"
+arch=('x86_64')
+license=('MIT')
+depends=('gtk4' 'gtk4-layer-shell' 'networkmanager')
+makedepends=('cargo')
+source=()
+
+build() {
+    cd "$startdir/.."
+    export RUSTUP_TOOLCHAIN=stable
+    export CARGO_TARGET_DIR=target
+    cargo build --release --locked
+}
+
+package() {
+    cd "$startdir/.."
+    install -Dm755 "target/release/Just-Wifi-Menu" "$pkgdir/usr/bin/just-wifi-menu"
+}

@@ -97,18 +97,17 @@ impl WifiManager {
                 .await?;
 
             let ssid_bytes = ap.ssid().await?;
-            if ssid_bytes.is_empty() {
+            let Some(ssid) = decode_ssid(&ssid_bytes) else {
                 continue;
-            }
+            };
 
-            let ssid = String::from_utf8_lossy(&ssid_bytes).into_owned();
             let strength = ap.strength().await?;
             let frequency = ap.frequency().await?;
             let flags = ap.flags().await?;
             let wpa_flags = ap.wpa_flags().await?;
             let rsn_flags = ap.rsn_flags().await?;
 
-            let secured = (flags & 0x1) != 0 || wpa_flags > 0 || rsn_flags > 0;
+            let secured = is_secured(flags, wpa_flags, rsn_flags);
             let connected = ap_path == active_ap_path;
             let saved = saved_map.contains_key(&ssid);
 
@@ -136,12 +135,7 @@ impl WifiManager {
         }
 
         let mut networks: Vec<WifiNetwork> = by_ssid.into_values().collect();
-        networks.sort_by(|a, b| {
-            b.connected
-                .cmp(&a.connected)
-                .then_with(|| b.saved.cmp(&a.saved))
-                .then_with(|| b.strength.cmp(&a.strength))
-        });
+        sort_networks(&mut networks);
 
         Ok(networks)
     }
@@ -301,5 +295,80 @@ impl WifiManager {
         }
 
         Ok(map)
+    }
+}
+
+/// Converte os bytes de um SSID para `String`, retornando `None` se estiver vazio (rede oculta).
+pub fn decode_ssid(bytes: &[u8]) -> Option<String> {
+    if bytes.is_empty() {
+        None
+    } else {
+        Some(String::from_utf8_lossy(bytes).into_owned())
+    }
+}
+
+/// Determina se o AP exige autenticação a partir das flags 802.11 do NetworkManager.
+pub fn is_secured(flags: u32, wpa_flags: u32, rsn_flags: u32) -> bool {
+    (flags & 0x1) != 0 || wpa_flags > 0 || rsn_flags > 0
+}
+
+/// Ordena redes: conectada primeiro, depois salvas, depois por maior sinal.
+pub fn sort_networks(networks: &mut [WifiNetwork]) {
+    networks.sort_by(|a, b| {
+        b.connected
+            .cmp(&a.connected)
+            .then_with(|| b.saved.cmp(&a.saved))
+            .then_with(|| b.strength.cmp(&a.strength))
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fake_network(ssid: &str, strength: u8, connected: bool, saved: bool) -> WifiNetwork {
+        WifiNetwork {
+            ssid: ssid.to_string(),
+            strength,
+            secured: true,
+            frequency: 5180,
+            connected,
+            saved,
+            path: OwnedObjectPath::try_from("/org/freedesktop/NetworkManager/AccessPoint/1")
+                .unwrap(),
+        }
+    }
+
+    #[test]
+    fn decode_ssid_handles_empty_and_utf8() {
+        assert_eq!(decode_ssid(b""), None);
+        assert_eq!(decode_ssid(b"The Force -5G"), Some("The Force -5G".to_string()));
+        assert_eq!(decode_ssid(&[0xff, b'A']), Some("\u{FFFD}A".to_string()));
+    }
+
+    #[test]
+    fn is_secured_checks_privacy_and_wpa_flags() {
+        assert!(!is_secured(0, 0, 0));
+        assert!(is_secured(0x1, 0, 0));
+        assert!(is_secured(0, 0x100, 0));
+        assert!(is_secured(0, 0, 0x100));
+    }
+
+    #[test]
+    fn sort_networks_orders_connected_then_saved_then_strength() {
+        let mut nets = vec![
+            fake_network("Fraca", 30, false, false),
+            fake_network("Salva_Media", 50, false, true),
+            fake_network("Forte_Aberta", 95, false, false),
+            fake_network("Conectada_Fraca", 40, true, true),
+        ];
+
+        sort_networks(&mut nets);
+
+        let ordered: Vec<&str> = nets.iter().map(|n| n.ssid.as_str()).collect();
+        assert_eq!(
+            ordered,
+            vec!["Conectada_Fraca", "Salva_Media", "Forte_Aberta", "Fraca"]
+        );
     }
 }

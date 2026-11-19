@@ -47,7 +47,7 @@ impl AppConfig {
         };
 
         if let Err(e) = fs::create_dir_all(&dir) {
-            eprintln!("Aviso: não foi possível criar {}: {e}", dir.display());
+            tracing::warn!("Não foi possível criar {}: {e}", dir.display());
             return Self::default();
         }
 
@@ -66,7 +66,7 @@ impl AppConfig {
 
         match fs::read_to_string(&config_path) {
             Ok(content) => toml::from_str(&content).unwrap_or_else(|e| {
-                eprintln!("Aviso: erro ao ler {}: {e}", config_path.display());
+                tracing::warn!("Erro ao ler {}: {e}", config_path.display());
                 Self::default()
             }),
             Err(_) => Self::default(),
@@ -109,4 +109,28 @@ fn config_dir() -> Option<PathBuf> {
     }
 
     std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config").join("just-wifi-menu"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn partial_toml_uses_defaults_for_missing_fields() {
+        let parsed: AppConfig = toml::from_str(
+            r#"
+            window_width = 450
+            close_on_connect = true
+            anchor = "bottom-right"
+            "#,
+        )
+        .expect("TOML parcial deve desserializar");
+
+        assert_eq!(parsed.window_width, 450);
+        assert_eq!(parsed.window_height, 500);
+        assert!(parsed.close_on_connect);
+        assert!(parsed.close_on_focus_loss);
+        assert_eq!(parsed.anchor, "bottom-right");
+        assert_eq!(parsed.margin_top, 8);
+    }
 }
